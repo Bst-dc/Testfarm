@@ -1,0 +1,15 @@
+# 데이터 파일은 절대 이미지에 넣지 않는다 (볼륨에만 둔다)
+*.db
+*.db.old
+*.db-wal
+*.db-shm
+*.xlsx
+~$*
+
+# 로컬 테스트/작업 파일
+local_erp_test.py
+patch_dates.py
+test_*.py
+report_*.html
+__pycache__/
+.streamlit/secrets.toml

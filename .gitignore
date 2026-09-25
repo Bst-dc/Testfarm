@@ -1,0 +1,25 @@
+# ===== 농장 실데이터 (절대 커밋하지 않는다) =====
+# git 히스토리는 영구히 남기 때문에, 한 번 올라가면 지워도 과거 커밋에서 복원된다.
+*.db
+*.db.old
+*.db-wal
+*.db-shm
+*.xlsx
+*.xls
+~$*
+report_*.html
+
+# ===== 로컬 테스트/일회성 스크립트 =====
+test_*.py
+patch_dates.py
+local_erp_test.py
+
+# ===== 비밀값 =====
+.streamlit/secrets.toml
+.env
+
+# ===== 파이썬 =====
+__pycache__/
+*.pyc
+.venv/
+venv/

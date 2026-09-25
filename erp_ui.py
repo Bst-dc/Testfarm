@@ -1,0 +1,1362 @@
+import streamlit as st
+import sqlite3
+import pandas as pd
+import os
+import io
+import glob
+import shutil
+import tempfile
+from datetime import datetime
+
+# ========== 데이터 저장 위치 ==========
+# 로컬 PC와 클라우드(영구 볼륨)에서 같은 코드가 돌아가도록 경로를 환경변수로 분리한다.
+#   - 로컬 윈도우 : 기본값 (사용자 폴더)/시험농장DB
+#   - 클라우드    : 환경변수 ERP_DB_DIR 에 볼륨 경로(/data) 지정
+# 구글 드라이브 폴더에는 두지 않는다. 동기화 프로그램이 파일을 잠가 잠금 오류와 손상을 일으킨다.
+DB_DIR = os.environ.get("ERP_DB_DIR") or os.path.join(os.path.expanduser("~"), "시험농장DB")
+BACKUP_DIR = os.path.join(DB_DIR, "backup")
+os.makedirs(BACKUP_DIR, exist_ok=True)
+BACKUP_KEEP = 30  # 농장별 보관 백업 개수
+
+# 사이드바의 '지금 백업 만들기'로 만든 백업을 모아 두는 폴더 (기본: 바탕화면\AI\시험농장백업파일).
+# 환경변수 ERP_MANUAL_BACKUP_DIR 로 바꿀 수 있고, 만들 수 없는 경로면 기본 백업 폴더를 쓴다.
+MANUAL_BACKUP_DIR = os.environ.get("ERP_MANUAL_BACKUP_DIR") or os.path.join(
+    os.path.expanduser("~"), "OneDrive", "Desktop", "AI", "시험농장백업파일"
+)
+try:
+    os.makedirs(MANUAL_BACKUP_DIR, exist_ok=True)
+except OSError:
+    MANUAL_BACKUP_DIR = BACKUP_DIR
+
+st.set_page_config(page_title="한우 시험농장 관리 시스템", layout="wide", page_icon="🐮")
+
+st.markdown(
+    """
+    <style>
+    /* 탭 메뉴(헤더) 글씨 크기 강제 확대, 내부 버튼에는 영향 가지 않게 제한 */
+    div[data-testid="stTabs"] [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
+        font-size: 28px !important;
+        font-weight: bold !important;
+    }
+    div[data-testid="stTabs"] [data-baseweb="tab-list"] button * {
+        font-size: 28px !important;
+        font-weight: bold !important;
+    }
+    div[data-testid="stTabs"] [data-baseweb="tab-list"] button {
+        font-size: 28px !important;
+        font-weight: bold !important;
+        padding-top: 1rem !important;
+        padding-bottom: 1rem !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+# ========== 농장 설정 ==========
+FARM_CONFIG = {
+    "구미선산농장": {
+        "db_file": os.path.join(DB_DIR, "erp_sunsan.db"),
+        "color": "#4F46E5",  # indigo
+        "test_groups": [
+            # 예: ("SS-G1", "대조군", "2023-10-01"),
+        ],
+        "cattle": [
+            # 비어 있음
+        ],
+    },
+    "구미고아농장": {
+        "db_file": os.path.join(DB_DIR, "erp_goa.db"),
+        "color": "#059669",  # emerald
+        "test_groups": [
+            # 예: ("GA-G1", "대조군", "2023-10-01"),
+        ],
+        "cattle": [
+            # 비어 있음
+        ],
+    },
+}
+
+SQLITE_DDL = """
+CREATE TABLE IF NOT EXISTS testgroup_master (
+    test_group_code TEXT PRIMARY KEY,
+    test_name TEXT NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE
+);
+
+CREATE TABLE IF NOT EXISTS cattle (
+    cattle_id TEXT PRIMARY KEY,
+    kpn TEXT,
+    birth_date DATE,
+    test_group_code TEXT REFERENCES testgroup_master(test_group_code),
+    status TEXT CHECK (status IN ('사육', '출하', '폐사')) NOT NULL DEFAULT '사육',
+    admission_date DATE,
+    closure_date DATE,
+    market_name TEXT,
+    building TEXT,
+    pen_number INTEGER,
+    feed_type TEXT CHECK (feed_type IN ('표준', '제한형', '증량형')) DEFAULT '표준',
+    roughage_grade TEXT CHECK (roughage_grade IN ('표준', '고급', '저급')) DEFAULT '표준',
+    castration_date DATE,
+    calf_price NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    commission_fee NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    transport_fee NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    initial_cost NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    insurance_value NUMERIC(12, 2) DEFAULT 0,
+    insurance_premium NUMERIC(12, 2) DEFAULT 0,
+    accident_date DATE,
+    insurance_claim NUMERIC(12, 2) DEFAULT 0,
+    memo TEXT
+);
+
+CREATE TABLE IF NOT EXISTS disease_record (
+    record_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cattle_id TEXT REFERENCES cattle(cattle_id),
+    onset_date DATE NOT NULL,
+    symptom TEXT,
+    medicine1 TEXT,
+    dosage1 NUMERIC(10, 2),
+    medicine2 TEXT,
+    dosage2 NUMERIC(10, 2),
+    medicine3 TEXT,
+    dosage3 NUMERIC(10, 2),
+    veterinarian TEXT,
+    recovery_date DATE,
+    prescription_no TEXT,
+    memo TEXT
+);
+
+CREATE TABLE IF NOT EXISTS item_master (
+    item_code TEXT PRIMARY KEY,
+    item_name TEXT NOT NULL,
+    category TEXT CHECK (category IN ('사료', '조사료', '약품')) NOT NULL,
+    current_stock NUMERIC(10, 2) NOT NULL DEFAULT 0,
+    moving_avg_price NUMERIC(12, 2) NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS purchase (
+    purchase_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    purchase_date DATE NOT NULL,
+    item_code TEXT REFERENCES item_master(item_code),
+    quantity NUMERIC(10, 2) NOT NULL,
+    total_amount NUMERIC(12, 2) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS monthly_usage (
+    usage_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    settlement_month TEXT NOT NULL,
+    test_group_code TEXT REFERENCES testgroup_master(test_group_code),
+    item_code TEXT REFERENCES item_master(item_code),
+    total_usage NUMERIC(10, 2) NOT NULL,
+    applied_price NUMERIC(12, 2) NOT NULL,
+    calculated_amount NUMERIC(12, 2) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS monthly_fixedcost (
+    fixed_cost_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    settlement_month TEXT NOT NULL,
+    expense_item TEXT NOT NULL,
+    total_billed_amount NUMERIC(12, 2) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cattle_cost_log (
+    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cattle_id TEXT REFERENCES cattle(cattle_id),
+    settlement_month TEXT NOT NULL,
+    allocated_variable_cost NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    allocated_fixed_cost NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    UNIQUE (cattle_id, settlement_month)
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_after_insert_purchase
+AFTER INSERT ON purchase
+FOR EACH ROW
+BEGIN
+    UPDATE item_master
+    SET current_stock = current_stock + NEW.quantity,
+        moving_avg_price = CASE 
+            WHEN current_stock + NEW.quantity > 0 
+            THEN ROUND(((current_stock * moving_avg_price) + NEW.total_amount) / (current_stock + NEW.quantity), 2)
+            ELSE 0 
+        END
+    WHERE item_code = NEW.item_code;
+END;
+"""
+
+# ========== DB 연결 관리 ==========
+# Streamlit은 버튼/폼을 누를 때마다 스크립트를 처음부터 다시 실행한다.
+# 이때 st.rerun() / st.stop() 은 예외로 동작하므로 스크립트 맨 아래의 conn.close() 가
+# 실행되지 않고, 커밋되지 않은 연결이 잠금(RESERVED lock)을 쥔 채 남는다.
+# 그 상태에서 다음 쓰기를 시도하면 "database is locked" 가 발생한다.
+# 그래서 열어 둔 연결을 모두 등록해 두고, 다음 실행 시작 시점에 한 번에 정리한다.
+def _conn_registry():
+    if "_open_db_conns" not in st.session_state:
+        st.session_state["_open_db_conns"] = []
+    return st.session_state["_open_db_conns"]
+
+
+def db_connect(db_path):
+    # check_same_thread=False: 다음 실행(다른 스레드)에서 정리할 수 있도록 허용
+    conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA journal_mode = WAL")  # 읽는 중에도 쓰기가 막히지 않는다
+    conn.execute("PRAGMA foreign_keys = ON")   # 스키마에 선언된 참조 무결성을 실제로 적용
+    _conn_registry().append(conn)
+    return conn
+
+
+def close_stale_connections():
+    """이전 실행에서 닫히지 않고 남은 연결을 롤백 후 모두 닫는다."""
+    registry = _conn_registry()
+    while registry:
+        stale = registry.pop()
+        for step in (stale.rollback, stale.close):
+            try:
+                step()
+            except Exception:
+                pass
+
+
+# ========== 백업 ==========
+def backup_db(db_file, reason="auto", dest_dir=None):
+    """SQLite 스냅샷 백업. 단순 파일 복사와 달리 쓰기 도중에도 안전하다.
+
+    dest_dir 을 지정하면 그 폴더에 저장하고, 오래된 백업 정리는 하지 않는다.
+    """
+    if not os.path.exists(db_file):
+        return None
+    name = os.path.splitext(os.path.basename(db_file))[0]
+    out_dir = dest_dir or BACKUP_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")  # 생성 날짜·시간을 파일명에 넣는다
+    out = os.path.join(out_dir, "%s_%s_%s.db" % (name, stamp, reason))
+    conn = db_connect(db_file)
+    try:
+        conn.execute("VACUUM INTO ?", (out,))
+    finally:
+        conn.close()
+    if dest_dir is None:
+        _prune_backups(name)
+    return out
+
+
+def _prune_backups(name):
+    """농장별로 최근 BACKUP_KEEP 개만 남기고 오래된 백업을 지운다."""
+    files = sorted(glob.glob(os.path.join(BACKUP_DIR, name + "_*.db")), key=os.path.getmtime)
+    for old in files[:-BACKUP_KEEP]:
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+
+
+def daily_backup(db_file):
+    """그날 첫 실행 때 한 번만 자동 백업한다."""
+    name = os.path.splitext(os.path.basename(db_file))[0]
+    today = datetime.now().strftime("%Y-%m-%d")
+    if glob.glob(os.path.join(BACKUP_DIR, "%s_%s_*_auto.db" % (name, today))):
+        return
+    try:
+        backup_db(db_file, "auto")
+    except Exception as e:
+        st.sidebar.warning("자동 백업에 실패했습니다: %s" % e)
+
+
+def restore_db(db_file, uploaded_bytes):
+    """업로드한 백업 파일로 DB를 교체한다. 교체 전 현재 DB를 먼저 백업한다."""
+    tmp_path = os.path.join(tempfile.gettempdir(), "erp_restore_%s.db" % datetime.now().strftime("%Y%m%d%H%M%S"))
+    with open(tmp_path, "wb") as fh:
+        fh.write(uploaded_bytes)
+    try:
+        probe = sqlite3.connect(tmp_path)
+        if probe.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            probe.close()
+            return False, "파일이 손상되었습니다. 다른 백업 파일을 사용하세요."
+        tables = {r[0] for r in probe.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        probe.close()
+        missing = {"cattle", "testgroup_master", "item_master"} - tables
+        if missing:
+            return False, "이 시스템의 DB 파일이 아닙니다. (없는 표: %s)" % ", ".join(sorted(missing))
+
+        if os.path.exists(db_file):
+            backup_db(db_file, "before-restore")
+        close_stale_connections()
+        for suffix in ("-wal", "-shm"):
+            leftover = db_file + suffix
+            if os.path.exists(leftover):
+                os.remove(leftover)
+        shutil.copyfile(tmp_path, db_file)
+        return True, "복원이 완료되었습니다."
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+# ========== 접속 보호 (외부 공개 시 필수) ==========
+def require_password():
+    """환경변수 ERP_PASSWORD 가 설정된 경우에만 비밀번호를 요구한다 (로컬 사용 시에는 통과)."""
+    expected = os.environ.get("ERP_PASSWORD")
+    if not expected:
+        try:
+            expected = st.secrets.get("ERP_PASSWORD")
+        except Exception:
+            expected = None
+    if not expected or st.session_state.get("_authed"):
+        return
+    st.markdown("## 🔒 한우 시험농장 관리 시스템")
+    pw = st.text_input("접속 비밀번호", type="password")
+    if pw:
+        if pw == expected:
+            st.session_state["_authed"] = True
+            st.rerun()
+        st.error("비밀번호가 올바르지 않습니다.")
+    st.stop()
+
+
+def init_db(farm_name):
+    cfg = FARM_CONFIG[farm_name]
+    db_file = cfg["db_file"]
+
+    # 파일을 지우기 전에 열려 있는 연결을 먼저 끊어야 잠금이 풀린다.
+    close_stale_connections()
+
+    if os.path.exists(db_file):
+        try:
+            os.remove(db_file)
+        except OSError as e:
+            st.error(
+                f"'{db_file}' 파일을 삭제할 수 없습니다. 다른 프로그램(DB 뷰어, 구글 드라이브 동기화 등)이 "
+                f"파일을 사용 중인지 확인한 뒤 다시 시도하세요. ({e})"
+            )
+            st.stop()
+
+    conn = db_connect(db_file)
+    conn.executescript(SQLITE_DDL)
+    
+    # 시험군 등록
+    for code, name, start in cfg["test_groups"]:
+        conn.execute("INSERT INTO testgroup_master VALUES (?, ?, ?, NULL)", (code, name, start))
+    
+    # 개체 등록 (엑셀 실제 필드 반영) - 예시 개체 제거됨
+    sample_cattle = [
+        # 비어 있음
+    ]
+    for c in sample_cattle:
+        total_cost = c[13] + c[14] + c[15]
+        conn.execute(
+            "INSERT INTO cattle (cattle_id, kpn, birth_date, test_group_code, status, admission_date, closure_date, market_name, building, pen_number, feed_type, roughage_grade, castration_date, calf_price, commission_fee, transport_fee, initial_cost, memo, insurance_value, insurance_premium) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10], c[11], c[12], c[13], c[14], c[15], total_cost, c[16], c[17], c[18])
+        )
+    
+    # 품목 등록 (사료, 조사료, 약품)
+    conn.execute("INSERT INTO item_master VALUES ('ITEM1', '배합사료A', '사료', 0, 0)")
+    conn.execute("INSERT INTO item_master VALUES ('ITEM2', '볏짚', '조사료', 0, 0)")
+    conn.execute("INSERT INTO item_master VALUES ('ITEM3', '구충제', '약품', 0, 0)")
+    
+    # 매입 데이터 (사료)
+    conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, total_amount) VALUES ('2023-10-05', 'ITEM1', 1000, 500000)")
+    conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, total_amount) VALUES ('2023-10-15', 'ITEM1', 1000, 600000)")
+    # 매입 데이터 (조사료)
+    conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, total_amount) VALUES ('2023-10-10', 'ITEM2', 500, 150000)")
+    # 매입 데이터 (약품)
+    conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, total_amount) VALUES ('2023-10-12', 'ITEM3', 50, 250000)")
+    
+    # 월간 사용 데이터 (FARM_CONFIG 에 시험군이 등록된 경우에만 예시 데이터를 넣는다)
+    groups = cfg["test_groups"]
+    for idx, usage in ((0, (2000, 500, 1000000)), (1, (3000, 500, 1500000))):
+        if idx < len(groups):
+            conn.execute(
+                "INSERT INTO monthly_usage (settlement_month, test_group_code, item_code, total_usage, applied_price, calculated_amount) VALUES ('2023-10', ?, 'ITEM1', ?, ?, ?)",
+                (groups[idx][0],) + usage,
+            )
+    
+    # 고정비
+    conn.execute("INSERT INTO monthly_fixedcost (settlement_month, expense_item, total_billed_amount) VALUES ('2023-10', '전기세', 200000)")
+    conn.execute("INSERT INTO monthly_fixedcost (settlement_month, expense_item, total_billed_amount) VALUES ('2023-10', '인건비', 300000)")
+    
+    conn.commit()
+    conn.close()
+
+def distribute_monthly_costs(db_file, settlement_month):
+    conn = db_connect(db_file)
+    cattle_df = pd.read_sql("SELECT cattle_id, test_group_code FROM cattle WHERE status = '사육'", conn)
+    
+    if cattle_df.empty:
+        conn.close()
+        return False, "사육 중인 개체가 없습니다."
+
+    total_rearing_count = len(cattle_df)
+    group_counts = cattle_df.groupby('test_group_code').size().to_dict()
+
+    fixed_cost_df = pd.read_sql(f"SELECT SUM(total_billed_amount) as total_fixed_cost FROM monthly_fixedcost WHERE settlement_month = '{settlement_month}'", conn)
+    total_fixed_cost = fixed_cost_df['total_fixed_cost'].iloc[0]
+    total_fixed_cost = total_fixed_cost if pd.notna(total_fixed_cost) else 0
+    fixed_cost_per_head = total_fixed_cost / total_rearing_count if total_rearing_count > 0 else 0
+
+    usage_df = pd.read_sql(f"SELECT test_group_code, SUM(calculated_amount) as total_variable_cost FROM monthly_usage WHERE settlement_month = '{settlement_month}' GROUP BY test_group_code", conn)
+    
+    variable_cost_per_head = {}
+    for _, row in usage_df.iterrows():
+        t_group = row['test_group_code']
+        total_v_cost = row['total_variable_cost']
+        count = group_counts.get(t_group, 0)
+        variable_cost_per_head[t_group] = (total_v_cost / count) if count > 0 else 0
+
+    log_data = []
+    for _, row in cattle_df.iterrows():
+        log_data.append({
+            'cattle_id': row['cattle_id'],
+            'settlement_month': settlement_month,
+            'allocated_variable_cost': round(variable_cost_per_head.get(row['test_group_code'], 0), 2),
+            'allocated_fixed_cost': round(fixed_cost_per_head, 2)
+        })
+        
+    log_df = pd.DataFrame(log_data)
+    
+    try:
+        log_df.to_sql('cattle_cost_log', conn, if_exists='append', index=False, method='multi')
+        conn.close()
+        return True, f"'{settlement_month}' 개체별 원가 정산 분배가 완료되었습니다. (총 {len(log_df)}마리 적용)"
+    except Exception as e:
+        conn.close()
+        return False, f"오류 발생 (이미 정산된 연월일 수 있습니다): {e}"
+
+# ========== UI 메인 ==========
+
+# 이전 실행(rerun)에서 닫히지 않은 연결부터 정리한다. -> "database is locked" 방지
+close_stale_connections()
+
+# 외부에서 접속 가능한 환경이면 비밀번호를 먼저 확인한다.
+require_password()
+
+# 사이드바: 농장 선택
+st.sidebar.markdown(
+    """
+    <div style="text-align:center; padding: 10px 0 20px 0;">
+        <span style="font-size: 2.5rem;">🐮</span>
+        <h2 style="margin:0; font-size:1.2rem;">한우 시험농장<br>관리 시스템</h2>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+st.sidebar.markdown("---")
+
+farm_names = list(FARM_CONFIG.keys())
+selected_farm = st.sidebar.radio(
+    "🏠 관리 농장 선택",
+    farm_names,
+    index=0,
+    help="정산을 수행할 농장을 선택하세요. 각 농장은 독립된 데이터베이스를 사용합니다."
+)
+
+farm_cfg = FARM_CONFIG[selected_farm]
+DB_FILE = farm_cfg["db_file"]
+farm_color = farm_cfg["color"]
+
+# DB 자동 생성
+if not os.path.exists(DB_FILE):
+    init_db(selected_farm)
+
+# 그날 첫 접속이면 자동 백업
+daily_backup(DB_FILE)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("##### 💾 데이터 백업")
+with st.sidebar.expander("백업 만들기 / 내려받기"):
+    st.caption("저장 폴더: %s" % MANUAL_BACKUP_DIR)
+    if st.button("지금 백업 만들기", use_container_width=True):
+        try:
+            saved = backup_db(DB_FILE, "manual", dest_dir=MANUAL_BACKUP_DIR)
+            st.session_state["last_backup"] = saved
+            st.success("%s 백업 저장 완료 · %s" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), os.path.basename(saved)))
+        except Exception as e:
+            st.session_state["last_backup"] = None
+            st.error("백업에 실패했습니다: %s" % e)
+    last_backup = st.session_state.get("last_backup")
+    if last_backup and os.path.exists(last_backup):
+        with open(last_backup, "rb") as fh:
+            st.download_button(
+                "내려받기: " + os.path.basename(last_backup),
+                fh.read(),
+                file_name=os.path.basename(last_backup),
+                mime="application/octet-stream",
+                use_container_width=True,
+            )
+    kept = glob.glob(os.path.join(BACKUP_DIR, os.path.splitext(os.path.basename(DB_FILE))[0] + "_*.db"))
+    st.caption("보관 중인 백업 %d개 · 매일 첫 접속 시 자동 백업 (최근 %d개 유지)" % (len(kept), BACKUP_KEEP))
+
+with st.sidebar.expander("백업 파일로 복원"):
+    st.caption("내려받아 둔 .db 백업 파일로 현재 데이터를 되돌립니다. 복원 직전 현재 상태도 자동 백업됩니다.")
+    restore_file = st.file_uploader("백업 파일 선택", type=["db"], key="restore_uploader")
+    if restore_file is not None and st.button("이 파일로 덮어쓰기", use_container_width=True):
+        ok, msg = restore_db(DB_FILE, restore_file.getvalue())
+        if ok:
+            st.success(msg)
+            st.rerun()
+        else:
+            st.error(msg)
+
+# 리셋 확인용 비밀번호. 환경변수(ERP_RESET_PASSWORD) 나 secrets 로 덮어쓸 수 있다.
+RESET_PASSWORD_DEFAULT = "1234"
+
+
+def reset_password():
+    """리셋 확인 비밀번호를 찾는다. 전용 값(ERP_RESET_PASSWORD) → 접속 비밀번호(ERP_PASSWORD) → 기본값."""
+    for key in ("ERP_RESET_PASSWORD", "ERP_PASSWORD"):
+        value = os.environ.get(key)
+        if not value:
+            try:
+                value = st.secrets.get(key)
+            except Exception:
+                value = None
+        if value:
+            return value
+    return RESET_PASSWORD_DEFAULT
+
+
+def reset_preview(db_file):
+    """리셋으로 지워질 데이터 건수. 표시용이므로 읽기에 실패한 항목은 조용히 넘어간다."""
+    tables = [
+        ("개체", "cattle"),
+        ("질병·처방 기록", "disease_record"),
+        ("품목 매입", "purchase"),
+        ("월별 사용량", "monthly_usage"),
+        ("월별 고정비", "monthly_fixedcost"),
+        ("개체별 원가 내역", "cattle_cost_log"),
+    ]
+    rows = []
+    if not os.path.exists(db_file):
+        return rows
+    conn = db_connect(db_file)
+    try:
+        for label, table in tables:
+            try:
+                count = conn.execute("SELECT COUNT(*) FROM %s" % table).fetchone()[0]
+            except sqlite3.Error:
+                continue
+            if count:
+                rows.append((label, count))
+    finally:
+        conn.close()
+    return rows
+
+
+@st.dialog("⚠️ 정말 초기화하시겠습니까?")
+def reset_dialog(farm_name, db_file):
+    st.error(f"**{farm_name}**의 모든 데이터가 삭제됩니다. 이 작업은 되돌릴 수 없습니다.")
+    rows = reset_preview(db_file)
+    if rows:
+        st.markdown("**지워지는 데이터**")
+        st.markdown("\n".join("- %s **%s건**" % (label, format(count, ",")) for label, count in rows))
+    else:
+        st.caption("현재 입력된 데이터가 없습니다.")
+    st.caption("실행 직전 자동으로 백업본을 만들기 때문에, 사이드바의 '백업 파일로 복원'으로 되돌릴 수 있습니다.")
+
+    pw = st.text_input("계속하려면 관리자 비밀번호를 입력하세요", type="password", key="reset_pw")
+    col_cancel, col_run = st.columns(2)
+    if col_cancel.button("취소", use_container_width=True):
+        st.session_state.pop("reset_pw", None)
+        st.rerun()
+    # disabled 를 쓰면 비밀번호를 입력한 직후 첫 클릭이 먹히지 않으므로, 눌렀을 때 검사한다.
+    if col_run.button("삭제하고 초기화", type="primary", use_container_width=True):
+        if not pw:
+            st.warning("비밀번호를 입력하세요.")
+        elif pw != reset_password():
+            st.error("비밀번호가 올바르지 않습니다. 초기화하지 않았습니다.")
+        else:
+            backup_db(db_file, "before-reset")
+            init_db(farm_name)
+            st.session_state.pop("reset_pw", None)
+            st.session_state["reset_done"] = True
+            st.rerun()
+
+
+st.sidebar.markdown("---")
+with st.sidebar.expander("⚠️ 초기 상태로 리셋"):
+    st.caption(f"**{selected_farm}**의 데이터가 **전부 삭제**됩니다. 실행 직전 자동으로 백업본을 만듭니다.")
+    if st.button("리셋 실행", use_container_width=True):
+        st.session_state.pop("reset_pw", None)
+        st.session_state["show_reset_dialog"] = True
+
+if st.session_state.pop("show_reset_dialog", False):
+    reset_dialog(selected_farm, DB_FILE)
+if st.session_state.pop("reset_done", False):
+    st.sidebar.success("데이터베이스가 리셋되었습니다. (직전 상태는 백업에 보관)")
+
+st.sidebar.markdown("---")
+st.sidebar.caption("저장 위치: %s" % DB_DIR)
+
+# 타이틀 (선택된 농장 표시)
+st.markdown(
+    f"""
+    <div style="display:flex; align-items:center; gap:16px; margin-bottom:4px;">
+        <div style="background:{farm_color}; color:white; padding:6px 18px; border-radius:8px; font-weight:800; font-size:0.95rem; letter-spacing:1px;">
+            {selected_farm}
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+st.title("한우 시험농장 관리 시스템")
+st.markdown("데이터베이스 트리거에 의한 **단가 자동 갱신** 및 Pandas를 이용한 **월말 1/n 비용 분배**를 시각적으로 확인하는 대시보드입니다.")
+
+conn = db_connect(DB_FILE)
+
+# KPI Metrics 표시
+col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+cattle_count = pd.read_sql("SELECT COUNT(*) as cnt FROM cattle WHERE status='사육'", conn).iloc[0]['cnt']
+item_count = pd.read_sql("SELECT COUNT(*) as cnt FROM item_master", conn).iloc[0]['cnt']
+purchase_count = pd.read_sql("SELECT COUNT(*) as cnt FROM purchase", conn).iloc[0]['cnt']
+log_count = pd.read_sql("SELECT COUNT(*) as cnt FROM cattle_cost_log", conn).iloc[0]['cnt']
+
+col_m1.metric("총 사육 마릿수", f"{cattle_count} 마리")
+col_m2.metric("등록 품목 수", f"{item_count} 종")
+col_m3.metric("누적 매입 건수", f"{purchase_count} 건")
+col_m4.metric("누적 정산 건수", f"{log_count} 건")
+st.markdown("---")
+
+tab_cattle, tab1, tab0, tab2, tab3 = st.tabs(["🐄 개체 관리", "📊 사육 및 재고 현황", "📦 품목·매입 관리", "💰 비용 청구 내역 (월말)", "🚀 월말 정산(1/n) 실행"])
+
+# ===== 개체 관리 탭 =====
+with tab_cattle:
+    sub_tab1, sub_tab2, sub_tab3 = st.tabs(["🐮 입식 등록", "📋 상태 변경 / 질병 기록", "📊 전체 현황"])
+    
+    with sub_tab1:
+        col_reg1, col_reg2 = st.columns(2)
+        
+        with col_reg1:
+            st.subheader("시험군 등록")
+            with st.form("add_group_form", clear_on_submit=True):
+                new_group_name = st.text_input("시험군 명칭", placeholder="예: 대조군, 처리군A 등")
+                new_group_start = st.date_input("시작일")
+                
+                # 버튼 넓이를 절반으로 줄이기 위해 컬럼 사용
+                btn_g1, btn_g2 = st.columns(2)
+                with btn_g1:
+                    submitted_group = st.form_submit_button("시험군 등록", type="primary", use_container_width=True)
+                
+                if submitted_group:
+                    if new_group_name:
+                        try:
+                            wc = db_connect(DB_FILE)
+                            # 코드를 입력받지 않고 명칭을 코드로 동일하게 사용
+                            wc.execute("INSERT INTO testgroup_master VALUES (?, ?, ?, NULL)", (new_group_name, new_group_name, new_group_start.isoformat()))
+                            wc.commit(); wc.close()
+                            st.success(f"시험군 '{new_group_name}' 등록 완료")
+                            st.rerun()
+                        except sqlite3.IntegrityError:
+                            wc.rollback(); wc.close()
+                            st.error("이미 존재하는 시험군 명칭입니다.")
+                    else:
+                        st.warning("시험군 명칭을 입력하세요.")
+            
+            st.markdown("---")
+            st.markdown("##### 등록된 시험군")
+            df_groups = pd.read_sql("SELECT test_group_code as 시험군코드, test_name as 시험명칭, start_date as 시작일, end_date as 종료일 FROM testgroup_master", conn)
+            # 시험군코드는 UI 화면 테이블에서 숨김 처리
+            st.dataframe(df_groups[['시험명칭', '시작일', '종료일']], use_container_width=True, hide_index=True)
+            
+            if not df_groups.empty:
+                st.markdown("##### 📝 시험군 수정 / 삭제")
+                with st.form("edit_group_form", clear_on_submit=True):
+                    # 시험명칭만 깔끔하게 표시
+                    group_opts = {r['시험명칭']: r['시험군코드'] for _, r in df_groups.iterrows()}
+                    edit_target = st.selectbox("대상 시험군", list(group_opts.keys()))
+                    edit_name = st.text_input("새 시험명칭", placeholder="새로운 명칭을 입력하세요 (수정 시에만)")
+                    
+                    col_b1, col_b2 = st.columns(2)
+                    with col_b1:
+                        submitted_edit = st.form_submit_button("수정", type="primary", use_container_width=True)
+                    with col_b2:
+                        submitted_delete = st.form_submit_button("삭제", type="secondary", use_container_width=True)
+                        
+                    if submitted_edit:
+                        if edit_name:
+                            target_code = group_opts[edit_target]
+                            wc = db_connect(DB_FILE)
+                            wc.execute("UPDATE testgroup_master SET test_name = ? WHERE test_group_code = ?", (edit_name, target_code))
+                            wc.commit(); wc.close()
+                            st.success(f"시험군 명칭 수정 완료")
+                            st.rerun()
+                        else:
+                            st.warning("새 시험명칭을 입력하세요.")
+                    
+                    if submitted_delete:
+                        target_code = group_opts[edit_target]
+                        wc = db_connect(DB_FILE)
+                        # 개체가 있는지 확인하여 무결성 오류 방지
+                        cattle_cnt = pd.read_sql(f"SELECT COUNT(*) as cnt FROM cattle WHERE test_group_code='{target_code}'", wc).iloc[0]['cnt']
+                        if cattle_cnt > 0:
+                            st.error(f"이 시험군에 등록된 개체가 {cattle_cnt}마리 있어 삭제할 수 없습니다. 개체를 먼저 삭제/이동하세요.")
+                            wc.close()
+                        else:
+                            wc.execute("DELETE FROM testgroup_master WHERE test_group_code = ?", (target_code,))
+                            wc.commit(); wc.close()
+                            st.success(f"시험군 '{target_code}' 삭제 완료")
+                            st.rerun()
+        
+        with col_reg2:
+            st.subheader("개체 입식 등록")
+            st.caption("개체를 한 마리씩 등록하거나, 엑셀 파일을 통해 일괄 등록할 수 있습니다.")
+            
+            groups_for_cattle = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master", conn)
+            if groups_for_cattle.empty:
+                st.info("먼저 시험군을 등록해 주세요.")
+            else:
+                cattle_group_opts = {r['test_name']: r['test_group_code'] for _, r in groups_for_cattle.iterrows()}
+                
+                # 등록 직후 rerun 으로 화면이 새로 그려져도 결과가 보이도록 세션에 담아 두고 여기서 보여 준다.
+                bulk_msg = st.session_state.pop("bulk_upload_msg", None)
+                with st.expander("📁 엑셀로 일괄 등록", expanded=bool(bulk_msg)):
+                    if bulk_msg:
+                        (st.success if bulk_msg[0] == "ok" else st.warning)(bulk_msg[1])
+                    st.markdown("**1. 일괄 등록용 엑셀 양식 다운로드**")
+                    df_template = pd.DataFrame(columns=[
+                        '순번', '이표번호 (개체번호)', 'KPN', '생년월일', '입식일 (구입일)',
+                        '우시장', '입식시월령', '현재월령', '동', '우방 (칸번호)', '거세', '상태',
+                        '사료구분', '조사료등급', '송아지 구입금액', '수수료', '운송료', '구입비용합계',
+                        '비고', '가축보험 가입금액', '가축보험 보험료', '사고일', '보험금 수령금액'
+                    ])
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        df_template.to_excel(writer, index=False, sheet_name='입식양식')
+                    st.download_button(
+                        label="엑셀 양식 다운로드",
+                        data=output.getvalue(),
+                        file_name="개체입식_일괄등록_양식.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    
+                    st.markdown("---")
+                    st.markdown("**2. 작성한 엑셀 파일 업로드 및 시험군 할당**")
+                    bulk_group_label = st.selectbox("업로드할 개체들의 **소속 시험군** 선택", list(cattle_group_opts.keys()), key="bulk_group_sel")
+                    uploaded_file = st.file_uploader("작성된 엑셀 파일을 선택하세요.", type=["xlsx", "xls"])
+                    
+                    if uploaded_file is not None:
+                        try:
+                            df_upload = pd.read_excel(uploaded_file)
+                            # 컬럼명 공백 차이를 먼저 정리한다 (예전 양식 호환)
+                            df_upload.columns = df_upload.columns.str.strip()
+
+                            # 이표번호 컬럼 찾기 (공백 유무 확인)
+                            id_col = next(
+                                (c for c in ("이표번호 (개체번호)", "이표번호(개체번호)") if c in df_upload.columns), None
+                            )
+                            if id_col is None:
+                                st.error("엑셀 파일에 '이표번호 (개체번호)' 항목이 없습니다. 올바른 양식을 사용해 주세요. (현재 파일 항목: %s)" % ", ".join(df_upload.columns))
+                                st.stop()
+
+                            # 이미 등록된 개체는 건너뛰고, 파일에서 새로 추가된 개체만 등록한다.
+                            existing_ids = set(
+                                pd.read_sql("SELECT cattle_id FROM cattle", conn)["cattle_id"].astype(str).str.strip()
+                            )
+                            file_ids = []
+                            for val in df_upload[id_col]:
+                                if pd.isna(val):
+                                    continue
+                                text = str(val).strip()
+                                if text and text.lower() != "nan":
+                                    file_ids.append(text)
+                            unique_ids = list(dict.fromkeys(file_ids))
+                            new_ids = [v for v in unique_ids if v not in existing_ids]
+                            st.info(
+                                "파일 %d건 · 새로 등록될 개체 **%d건** · 이미 등록되어 건너뛸 개체 %d건"
+                                % (len(file_ids), len(new_ids), len(unique_ids) - len(new_ids))
+                            )
+                            if new_ids:
+                                with st.expander("새로 등록될 이표번호 %d건 보기" % len(new_ids)):
+                                    st.write(", ".join(new_ids))
+                            fill_missing_dates = st.checkbox(
+                                "이미 등록된 개체의 비어 있는 생년월일·입식일은 파일 값으로 채우기",
+                                value=False,
+                                key="bulk_fill_dates",
+                            )
+
+                            # 버튼 넓이를 절반으로 줄이기 위해 컬럼 사용
+                            btn_b1, btn_b2 = st.columns(2)
+                            with btn_b1:
+                                do_bulk_upload = st.button("개체 일괄등록", type="primary", use_container_width=True)
+
+                            if do_bulk_upload:
+                                wc = db_connect(DB_FILE)
+                                success_cnt, skip_cnt, fail_cnt, filled_cnt = 0, 0, 0, 0
+                                seen_ids = set()
+                                selected_bulk_group_code = cattle_group_opts[bulk_group_label]
+
+                                for _, row in df_upload.iterrows():
+                                    try:
+                                        # 빈칸 및 과거 양식 호환 처리를 위한 헬퍼 함수
+                                        def get_col_val(cols):
+                                            if isinstance(cols, str): cols = [cols]
+                                            for c in cols:
+                                                if c in df_upload.columns:
+                                                    return row.get(c)
+                                            return None
+
+                                        def get_str(cols):
+                                            val = get_col_val(cols)
+                                            if pd.isna(val) or val is None: return None
+                                            v = str(val).strip()
+                                            if not v or v.lower() == 'nan' or v == 'None': return None
+                                            return v
+
+                                        def get_num(cols, default=0):
+                                            val = get_col_val(cols)
+                                            if pd.isna(val) or val is None: return default
+                                            v = str(val).strip()
+                                            if not v or v.lower() == 'nan' or v == 'None': return default
+                                            try:
+                                                return float(val)
+                                            except:
+                                                return default
+                                        
+                                        def get_date(cols):
+                                            val = get_col_val(cols)
+                                            if pd.isna(val) or val is None: return None
+                                            if hasattr(val, 'strftime'): return val.strftime('%Y-%m-%d')
+                                            v = str(val).strip()
+                                            if not v or v.lower() == 'nan' or v == 'None': return None
+                                            return v[:10]
+                                        
+                                        cid = get_str(['이표번호 (개체번호)', '이표번호(개체번호)'])
+                                        if not cid: continue
+                                        
+                                        calf_p = get_num('송아지 구입금액', 0)
+                                        comm_f = get_num('수수료', 0)
+                                        trans_f = get_num('운송료', 0)
+                                        init_c = calf_p + comm_f + trans_f
+                                        
+                                        birth_d = get_date(['생년월일', '생년월일(YYYY-MM-DD)'])
+                                        admin_d = get_date(['입식일 (구입일)', '입식일(YYYY-MM-DD)'])
+                                        castr_d = get_date(['거세', '거세일(YYYY-MM-DD)'])
+
+                                        # 파일에 새로 추가된 개체만 등록한다. 이미 등록됐거나 파일 안에서 중복된 이표번호는 건너뛴다.
+                                        if cid in existing_ids or cid in seen_ids:
+                                            if fill_missing_dates and cid in existing_ids and (birth_d or admin_d):
+                                                cur = wc.execute(
+                                                    "SELECT birth_date, admission_date FROM cattle WHERE cattle_id = ?", (cid,)
+                                                ).fetchone()
+                                                sets, params = [], []
+                                                if cur and birth_d and not (cur[0] or "").strip():
+                                                    sets.append("birth_date = ?")
+                                                    params.append(birth_d)
+                                                if cur and admin_d and not (cur[1] or "").strip():
+                                                    sets.append("admission_date = ?")
+                                                    params.append(admin_d)
+                                                if sets:
+                                                    params.append(cid)
+                                                    wc.execute("UPDATE cattle SET %s WHERE cattle_id = ?" % ", ".join(sets), params)
+                                                    filled_cnt += 1
+                                            skip_cnt += 1
+                                            seen_ids.add(cid)
+                                            continue
+                                        seen_ids.add(cid)
+                                        
+                                        status_val = get_str('상태') or '사육'
+                                        kpn_val = get_str('KPN')
+                                        market_val = get_str('우시장')
+                                        building_val = get_str('동')
+                                        pen_val = get_num(['우방 (칸번호)', '우방(칸번호)'], None)
+                                        feed_val = get_str(['사료구분', '사료구분(표준/증량형/제한형)', '사료구분(증량형/제한형)']) or '표준'
+                                        roughage_val = get_str(['조사료등급', '조사료등급(표준/고급/저급)', '조사료등급(고급/저급)']) or '표준'
+                                        memo_val = get_str('비고')
+                                        ins_v = get_num(['가축보험 가입금액', '가축보험 가입금액(만원)'], None)
+                                        ins_p = get_num('가축보험 보험료', None)
+                                        
+                                        wc.execute(
+                                            "INSERT INTO cattle (cattle_id, kpn, birth_date, test_group_code, status, admission_date, market_name, building, pen_number, feed_type, roughage_grade, castration_date, calf_price, commission_fee, transport_fee, initial_cost, insurance_value, insurance_premium, memo) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                            (
+                                                cid, kpn_val, birth_d,
+                                                selected_bulk_group_code, status_val, admin_d,
+                                                market_val, building_val, pen_val,
+                                                feed_val, roughage_val, castr_d,
+                                                calf_p, comm_f, trans_f, init_c,
+                                                ins_v, ins_p, memo_val
+                                            )
+                                        )
+                                        success_cnt += 1
+                                    except sqlite3.IntegrityError:
+                                        # 위에서 걸러지지 않은 중복(동시 입력 등)도 오류가 아닌 '건너뜀'으로 처리
+                                        skip_cnt += 1
+                                    except Exception as e:
+                                        st.error(f"알 수 없는 에러 (이표번호 {cid}): {e}")
+                                        fail_cnt += 1
+                                wc.commit(); wc.close()
+                                parts = ["신규 %d건 등록" % success_cnt]
+                                if skip_cnt:
+                                    parts.append("이미 등록되어 건너뜀 %d건" % skip_cnt)
+                                if filled_cnt:
+                                    parts.append("기존 개체 빈 날짜 보완 %d건" % filled_cnt)
+                                if fail_cnt:
+                                    parts.append("오류 %d건" % fail_cnt)
+                                summary = " · ".join(parts)
+                                st.session_state["bulk_upload_msg"] = (
+                                    "ok" if (success_cnt or filled_cnt) else "warn",
+                                    summary if (success_cnt or filled_cnt) else "새로 추가된 개체가 없습니다. (%s)" % summary,
+                                )
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"엑셀 파일 읽기 오류: {e}")
+                
+                st.markdown("---")
+                with st.form("add_cattle_form", clear_on_submit=True):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        new_cattle_id = st.text_input("이표번호 (개체번호)", placeholder="예: 216585979")
+                    with c2:
+                        new_kpn = st.text_input("KPN", placeholder="예: 1654")
+                    
+                    c3, c4 = st.columns(2)
+                    with c3:
+                        new_birth_date = st.date_input("생년월일")
+                    with c4:
+                        new_admission_date = st.date_input("입식일 (구입일)")
+                    
+                    c5, c6 = st.columns(2)
+                    with c5:
+                        new_cattle_group = st.selectbox("소속 시험군", list(cattle_group_opts.keys()))
+                    with c6:
+                        new_market = st.text_input("우시장", placeholder="예: 순정축협(정읍)")
+                    
+                    c7, c8, c9 = st.columns(3)
+                    with c7:
+                        new_building = st.selectbox("동", ["1동", "2동", "3동", "4동"])
+                    with c8:
+                        new_pen = st.number_input("우방 (칸번호)", min_value=1, max_value=19, value=1)
+                    with c9:
+                        new_feed_type = st.selectbox("사료구분", ["표준", "증량형", "제한형"])
+                    
+                    c10, c11 = st.columns(2)
+                    with c10:
+                        new_roughage = st.selectbox("조사료등급", ["표준", "고급", "저급"])
+                    with c11:
+                        new_castration = st.date_input("거세일")
+                    
+                    st.markdown("**입식 비용 내역**")
+                    cc1, cc2, cc3 = st.columns(3)
+                    with cc1:
+                        new_calf_price = st.number_input("송아지 구입금액 (원)", min_value=0, step=100000, value=5000000)
+                    with cc2:
+                        new_commission = st.number_input("수수료 (원)", min_value=0, step=10000, value=30000)
+                    with cc3:
+                        new_transport = st.number_input("운송료 (원)", min_value=0, step=10000, value=0)
+                    
+                    st.markdown("**가축보험 정보**")
+                    ci1, ci2 = st.columns(2)
+                    with ci1:
+                        new_ins_value = st.number_input("가입금액 (만원)", min_value=0, step=10, value=770)
+                    with ci2:
+                        new_ins_premium = st.number_input("보험료 (원)", min_value=0, step=1000, value=0)
+                    
+                    # 버튼 넓이를 절반으로 줄이기 위해 컬럼 사용
+                    btn_c1, btn_c2 = st.columns(2)
+                    with btn_c1:
+                        submitted_cattle = st.form_submit_button("개체 입식 등록", type="primary", use_container_width=True)
+                        
+                    if submitted_cattle:
+                        if new_cattle_id:
+                            total_init_cost = new_calf_price + new_commission + new_transport
+                            sel_group_code = cattle_group_opts[new_cattle_group]
+                            try:
+                                wc = db_connect(DB_FILE)
+                                wc.execute(
+                                    "INSERT INTO cattle (cattle_id, kpn, birth_date, test_group_code, status, admission_date, market_name, building, pen_number, feed_type, roughage_grade, castration_date, calf_price, commission_fee, transport_fee, initial_cost, insurance_value, insurance_premium) VALUES (?,?,?,?,'사육',?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                    (new_cattle_id, new_kpn, new_birth_date.isoformat(), sel_group_code, new_admission_date.isoformat(), new_market, new_building, new_pen, new_feed_type, new_roughage, new_castration.isoformat(), new_calf_price, new_commission, new_transport, total_init_cost, new_ins_value, new_ins_premium)
+                                )
+                                wc.commit(); wc.close()
+                                st.success(f"개체 '{new_cattle_id}' 입식 등록 완료! (구입비용합계: {total_init_cost:,}원)")
+                                st.rerun()
+                            except sqlite3.IntegrityError:
+                                wc.rollback(); wc.close()
+                                st.error("이미 등록된 이표번호입니다.")
+                        else:
+                            st.warning("이표번호를 입력하세요.")
+
+    
+    with sub_tab2:
+        col_st, col_dis = st.columns(2)
+        
+        with col_st:
+            st.subheader("상태 변경 (출하 / 폐사)")
+            active_cattle = pd.read_sql("SELECT cattle_id, test_group_code, building, pen_number FROM cattle WHERE status = '사육' ORDER BY cattle_id", conn)
+            if active_cattle.empty:
+                st.info("현재 사육 중인 개체가 없습니다.")
+            else:
+                search_st_cid = st.text_input("🔎 대상 개체 이표번호 검색", placeholder="검색할 이표번호 일부 입력", key="search_st_cid")
+                if search_st_cid:
+                    active_cattle = active_cattle[active_cattle['cattle_id'].astype(str).str.contains(search_st_cid)]
+                
+                if active_cattle.empty:
+                    st.warning("검색된 개체가 없습니다.")
+                else:
+                    cattle_opts = {}
+                    for _, r in active_cattle.iterrows():
+                        b = str(r['building']).strip() if pd.notnull(r['building']) and str(r['building']).lower() != 'nan' else ""
+                        label = f"{r['cattle_id']} ({r['test_group_code']}) {b}".strip()
+                        cattle_opts[label] = r['cattle_id']
+                        
+                    with st.form("change_status_form", clear_on_submit=True):
+                        target_cattle_label = st.selectbox("대상 개체 선택", list(cattle_opts.keys()))
+                        new_status = st.selectbox("변경할 상태", ["출하", "폐사"])
+                        closure_date = st.date_input("출하/폐사 일자")
+                        
+                        btn_s1, btn_s2 = st.columns(2)
+                        with btn_s1:
+                            submitted_status = st.form_submit_button("상태 변경", type="primary", use_container_width=True)
+                            
+                        if submitted_status:
+                            target_id = cattle_opts[target_cattle_label]
+                            wc = db_connect(DB_FILE)
+                            wc.execute("UPDATE cattle SET status = ?, closure_date = ? WHERE cattle_id = ?", (new_status, closure_date.isoformat(), target_id))
+                            wc.commit(); wc.close()
+                            st.success(f"개체 '{target_id}' → '{new_status}' 변경 완료")
+                            st.rerun()
+                    
+                    st.markdown("---")
+                    st.subheader("시험군 이동 (소속 변경)")
+                    groups_for_move = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master", conn)
+                    if groups_for_move.empty:
+                        st.info("등록된 시험군이 없습니다.")
+                    else:
+                        move_group_opts = {r['test_name']: r['test_group_code'] for _, r in groups_for_move.iterrows()}
+                        with st.form("move_group_form", clear_on_submit=True):
+                            move_cattle_label = st.selectbox("이동할 개체 선택", list(cattle_opts.keys()), key="move_cattle_sel")
+                            move_target_group = st.selectbox("이동할 시험군", list(move_group_opts.keys()))
+                            
+                            btn_m1, btn_m2 = st.columns(2)
+                            with btn_m1:
+                                submitted_move = st.form_submit_button("시험군 이동", type="primary", use_container_width=True)
+                                
+                            if submitted_move:
+                                move_cid = cattle_opts[move_cattle_label]
+                                move_gcode = move_group_opts[move_target_group]
+                                wc = db_connect(DB_FILE)
+                                wc.execute("UPDATE cattle SET test_group_code = ? WHERE cattle_id = ?", (move_gcode, move_cid))
+                                wc.commit(); wc.close()
+                                st.success(f"개체 '{move_cid}' → '{move_target_group}'(으)로 이동 완료")
+                                st.rerun()
+        
+        with col_dis:
+            st.subheader("💉 질병 / 투약 기록")
+            all_cattle = pd.read_sql("SELECT cattle_id FROM cattle ORDER BY cattle_id", conn)
+            if all_cattle.empty:
+                st.info("등록된 개체가 없습니다.")
+            else:
+                with st.form("add_disease_form", clear_on_submit=True):
+                    dis_cattle = st.selectbox("대상 개체", all_cattle['cattle_id'].tolist())
+                    dis_date = st.date_input("발병일")
+                    dis_symptom = st.text_input("병명/증상", placeholder="예: 호흡기 질환")
+                    
+                    dc1, dc2 = st.columns(2)
+                    with dc1:
+                        dis_med1 = st.text_input("약품1", placeholder="예: 항생제")
+                        dis_dose1 = st.number_input("수량(ml) 1", min_value=0.0, step=1.0, value=0.0)
+                    with dc2:
+                        dis_med2 = st.text_input("약품2")
+                        dis_dose2 = st.number_input("수량(ml) 2", min_value=0.0, step=1.0, value=0.0)
+                    
+                    dis_vet = st.text_input("수의사", placeholder="예: 김수의")
+                    dis_rx = st.text_input("처방전번호")
+                    
+                    submitted_dis = st.form_submit_button("질병 기록 등록", type="primary", use_container_width=True)
+                    if submitted_dis:
+                        wc = db_connect(DB_FILE)
+                        wc.execute(
+                            "INSERT INTO disease_record (cattle_id, onset_date, symptom, medicine1, dosage1, medicine2, dosage2, veterinarian, prescription_no) VALUES (?,?,?,?,?,?,?,?,?)",
+                            (dis_cattle, dis_date.isoformat(), dis_symptom, dis_med1, dis_dose1, dis_med2, dis_dose2, dis_vet, dis_rx)
+                        )
+                        wc.commit(); wc.close()
+                        st.success("질병 기록 등록 완료")
+                        st.rerun()
+            
+            st.markdown("---")
+            st.markdown("##### 질병 기록 내역")
+            df_disease = pd.read_sql("""
+                SELECT d.record_id as ID, d.cattle_id as 이표번호, d.onset_date as 발병일, d.symptom as 병명증상,
+                       d.medicine1 as 약품1, d.dosage1 as '수량(ml)', d.medicine2 as 약품2,
+                       d.veterinarian as 수의사, d.recovery_date as 완치일, d.prescription_no as 처방전번호
+                FROM disease_record d ORDER BY d.onset_date DESC
+            """, conn)
+            if df_disease.empty:
+                st.info("등록된 질병 기록이 없습니다.")
+            else:
+                st.dataframe(df_disease, use_container_width=True, hide_index=True)
+    
+    with sub_tab3:
+        # 상태별 카운트
+        status_counts = pd.read_sql("SELECT status, COUNT(*) as cnt FROM cattle GROUP BY status", conn)
+        if not status_counts.empty:
+            cols_status = st.columns(len(status_counts))
+            status_colors = {'사육': '🟢', '출하': '🔵', '폐사': '🔴'}
+            for i, (_, row) in enumerate(status_counts.iterrows()):
+                icon = status_colors.get(row['status'], '⚪')
+                cols_status[i].metric(f"{icon} {row['status']}", f"{row['cnt']} 마리")
+        
+        st.markdown("---")
+        st.subheader("전체 개체 현황 (개체관리대장)")
+        search_cid = st.text_input("🔎 이표번호 검색", placeholder="검색할 이표번호의 일부 또는 전체를 입력하세요...")
+        
+        df_all_cattle = pd.read_sql("""
+            SELECT c.cattle_id as 이표번호, c.kpn as KPN,
+                   c.birth_date as 생년월일, c.admission_date as 입식일,
+                   t.test_name as 시험군, c.status as 상태,
+                   c.market_name as 우시장, c.building as 동, c.pen_number as 우방,
+                   c.feed_type as 사료구분, c.roughage_grade as 조사료등급,
+                   c.castration_date as 거세일,
+                   c.calf_price as 구입금액, c.commission_fee as 수수료,
+                   c.transport_fee as 운송료, c.initial_cost as 구입비용합계,
+                   c.insurance_value as 보험가입금액, c.insurance_premium as 보험료,
+                   c.closure_date as 종결일, c.memo as 비고
+            FROM cattle c
+            LEFT JOIN testgroup_master t ON c.test_group_code = t.test_group_code
+            ORDER BY c.status, c.admission_date, c.cattle_id
+        """, conn)
+        
+        if search_cid:
+            df_all_cattle = df_all_cattle[df_all_cattle['이표번호'].astype(str).str.contains(search_cid)]
+            st.markdown(f"**검색 결과: {len(df_all_cattle)}건**")
+            
+        # 금액 관련 컬럼 천단위 콤마 표시
+        money_cols = ['구입금액', '수수료', '운송료', '구입비용합계', '보험가입금액', '보험료']
+        for col in money_cols:
+            if col in df_all_cattle.columns:
+                df_all_cattle[col] = df_all_cattle[col].apply(lambda x: f"{int(x):,}" if pd.notnull(x) and str(x).strip() != '' else "")
+            
+        st.dataframe(df_all_cattle, use_container_width=True, hide_index=True)
+
+with tab1:
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.subheader("사육 개체 요약")
+        df_cattle = pd.read_sql("""
+            SELECT c.cattle_id as 개체번호, t.test_name as 시험군, c.status as 상태, c.initial_cost as 초기원가
+            FROM cattle c
+            JOIN testgroup_master t ON c.test_group_code = t.test_group_code
+            ORDER BY c.status, c.cattle_id
+        """, conn)
+        st.dataframe(df_cattle, use_container_width=True, hide_index=True)
+    with col_b:
+        st.subheader("품목 및 재고 상태")
+        st.caption("매입 시마다 이동평균단가가 자동으로 갱신됩니다.")
+        df_item = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
+        st.dataframe(df_item, use_container_width=True, hide_index=True)
+
+with tab0:
+    col_left, col_right = st.columns(2)
+    
+    with col_left:
+        st.subheader("📋 품목 등록")
+        st.caption("사료, 조사료, 약품 등 새 품목을 등록합니다.")
+        with st.form("add_item_form", clear_on_submit=True):
+            new_item_code = st.text_input("품목코드", placeholder="예: ITEM4")
+            new_item_name = st.text_input("품목명", placeholder="예: TMR사료")
+            new_item_category = st.selectbox("분류", ["사료", "조사료", "약품"])
+            submitted_item = st.form_submit_button("품목 등록", type="primary", use_container_width=True)
+            if submitted_item:
+                if new_item_code and new_item_name:
+                    try:
+                        write_conn = db_connect(DB_FILE)
+                        write_conn.execute("INSERT INTO item_master VALUES (?, ?, ?, 0, 0)", (new_item_code, new_item_name, new_item_category))
+                        write_conn.commit()
+                        write_conn.close()
+                        st.success(f"품목 '{new_item_name}' ({new_item_code})이 등록되었습니다.")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        write_conn.rollback(); write_conn.close()
+                        st.error("이미 존재하는 품목코드입니다.")
+                else:
+                    st.warning("품목코드와 품목명을 모두 입력하세요.")
+        
+        st.markdown("---")
+        st.markdown("##### 등록된 품목 목록")
+        df_items_all = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
+        st.dataframe(df_items_all, use_container_width=True, hide_index=True)
+    
+    with col_right:
+        st.subheader("🚚 매입(입고) 등록")
+        st.caption("사료·조사료·약품을 매입하면 재고와 이동평균단가가 자동 갱신됩니다.")
+        
+        # 품목 목록 가져오기
+        items_df = pd.read_sql("SELECT item_code, item_name, category FROM item_master", conn)
+        if items_df.empty:
+            st.info("먼저 좌측에서 품목을 등록해 주세요.")
+        else:
+            item_options = {f"{r['item_name']} ({r['item_code']}) [{r['category']}]": r['item_code'] for _, r in items_df.iterrows()}
+            
+            with st.form("add_purchase_form", clear_on_submit=True):
+                purchase_item_label = st.selectbox("매입 품목", list(item_options.keys()))
+                purchase_date = st.date_input("매입일자")
+                col_q, col_a2 = st.columns(2)
+                with col_q:
+                    purchase_qty = st.number_input("매입수량 (kg/개)", min_value=0.01, step=1.0, format="%.2f")
+                with col_a2:
+                    purchase_amount = st.number_input("총매입금액 (원)", min_value=0, step=10000)
+                
+                submitted_purchase = st.form_submit_button("매입 등록", type="primary", use_container_width=True)
+                if submitted_purchase:
+                    if purchase_qty > 0 and purchase_amount > 0:
+                        selected_item_code = item_options[purchase_item_label]
+                        write_conn = db_connect(DB_FILE)
+                        write_conn.execute(
+                            "INSERT INTO purchase (purchase_date, item_code, quantity, total_amount) VALUES (?, ?, ?, ?)",
+                            (purchase_date.isoformat(), selected_item_code, purchase_qty, purchase_amount)
+                        )
+                        write_conn.commit()
+                        write_conn.close()
+                        unit_price = purchase_amount / purchase_qty
+                        st.success(f"매입 완료! {purchase_item_label} | {purchase_qty:,.1f} 단위 | {purchase_amount:,}원 (단가 {unit_price:,.0f}원)")
+                        st.rerun()
+                    else:
+                        st.warning("수량과 금액을 올바르게 입력하세요.")
+        
+        st.markdown("---")
+        st.markdown("##### 매입 내역")
+        df_purchase = pd.read_sql("""
+            SELECT p.purchase_id as 매입ID, p.purchase_date as 매입일자, 
+                   i.item_name as 품목명, i.category as 분류,
+                   p.quantity as 수량, p.total_amount as 총금액,
+                   ROUND(p.total_amount / p.quantity, 0) as 단가
+            FROM purchase p
+            JOIN item_master i ON p.item_code = i.item_code
+            ORDER BY p.purchase_date DESC
+        """, conn)
+        st.dataframe(df_purchase, use_container_width=True, hide_index=True)
+
+with tab2:
+    st.subheader("월말 비용 등록 및 조회")
+    st.markdown("월말에 재고 조사 후, 시험군별 품목 사용량과 농장 고정비를 등록합니다.")
+    
+    col_c, col_d = st.columns(2)
+    
+    with col_c:
+        st.markdown("##### 🌾 시험군별 사용량 등록 (변동비)")
+        
+        # 시험군 및 품목 목록
+        groups_df = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master", conn)
+        items_df2 = pd.read_sql("SELECT item_code, item_name, category, moving_avg_price FROM item_master", conn)
+        
+        if groups_df.empty or items_df2.empty:
+            st.info("시험군 또는 품목이 등록되어 있지 않습니다.")
+        else:
+            group_options = {f"{r['test_name']} ({r['test_group_code']})": r['test_group_code'] for _, r in groups_df.iterrows()}
+            item_options2 = {f"{r['item_name']} ({r['item_code']}) [{r['category']}]": r['item_code'] for _, r in items_df2.iterrows()}
+            
+            with st.form("add_usage_form", clear_on_submit=True):
+                usage_month = st.text_input("정산연월", value="2023-10", help="형식: YYYY-MM")
+                usage_group_label = st.selectbox("시험군", list(group_options.keys()))
+                usage_item_label = st.selectbox("사용 품목", list(item_options2.keys()))
+                usage_qty = st.number_input("총 사용량 (kg/개)", min_value=0.01, step=1.0, format="%.2f")
+                
+                submitted_usage = st.form_submit_button("사용량 등록", type="primary", use_container_width=True)
+                if submitted_usage:
+                    if usage_qty > 0 and usage_month:
+                        sel_group = group_options[usage_group_label]
+                        sel_item = item_options2[usage_item_label]
+                        # 현재 이동평균단가 조회
+                        avg_price = items_df2[items_df2['item_code'] == sel_item]['moving_avg_price'].iloc[0]
+                        calc_amount = round(usage_qty * avg_price, 2)
+                        
+                        write_conn = db_connect(DB_FILE)
+                        write_conn.execute(
+                            "INSERT INTO monthly_usage (settlement_month, test_group_code, item_code, total_usage, applied_price, calculated_amount) VALUES (?, ?, ?, ?, ?, ?)",
+                            (usage_month, sel_group, sel_item, usage_qty, avg_price, calc_amount)
+                        )
+                        write_conn.commit()
+                        write_conn.close()
+                        st.success(f"등록 완료! {usage_group_label} | {usage_item_label} | {usage_qty:,.1f} 사용 | 적용단가 {avg_price:,.0f}원 | 산출액 {calc_amount:,.0f}원")
+                        st.rerun()
+                    else:
+                        st.warning("정산연월과 사용량을 올바르게 입력하세요.")
+        
+        st.markdown("---")
+        st.markdown("##### 등록된 사용 내역")
+        df_usage = pd.read_sql("""
+            SELECT u.usage_id as ID, u.settlement_month as 정산연월,
+                   t.test_name as 시험군, i.item_name as 품목명,
+                   u.total_usage as 사용량, u.applied_price as 적용단가,
+                   u.calculated_amount as 산출총액
+            FROM monthly_usage u
+            JOIN testgroup_master t ON u.test_group_code = t.test_group_code
+            JOIN item_master i ON u.item_code = i.item_code
+            ORDER BY u.settlement_month DESC, t.test_name
+        """, conn)
+        st.dataframe(df_usage, use_container_width=True, hide_index=True)
+    
+    with col_d:
+        st.markdown("##### ⚡ 농장 고정비 등록")
+        
+        with st.form("add_fixedcost_form", clear_on_submit=True):
+            fc_month = st.text_input("정산연월 ", value="2023-10", help="형식: YYYY-MM")
+            fc_item = st.selectbox("지출 항목", ["인건비", "전기세", "수도세", "감가상각비", "수리유지비", "기타"])
+            fc_amount = st.number_input("총 청구금액 (원)", min_value=0, step=10000)
+            
+            submitted_fc = st.form_submit_button("고정비 등록", type="primary", use_container_width=True)
+            if submitted_fc:
+                if fc_amount > 0 and fc_month:
+                    write_conn = db_connect(DB_FILE)
+                    write_conn.execute(
+                        "INSERT INTO monthly_fixedcost (settlement_month, expense_item, total_billed_amount) VALUES (?, ?, ?)",
+                        (fc_month, fc_item, fc_amount)
+                    )
+                    write_conn.commit()
+                    write_conn.close()
+                    st.success(f"등록 완료! [{fc_month}] {fc_item} | {fc_amount:,}원")
+                    st.rerun()
+                else:
+                    st.warning("정산연월과 금액을 올바르게 입력하세요.")
+        
+        st.markdown("---")
+        st.markdown("##### 등록된 고정비 내역")
+        df_fixed = pd.read_sql("""
+            SELECT fixed_cost_id as ID, settlement_month as 정산연월,
+                   expense_item as 지출항목, total_billed_amount as 총청구금액
+            FROM monthly_fixedcost
+            ORDER BY settlement_month DESC
+        """, conn)
+        st.dataframe(df_fixed, use_container_width=True, hide_index=True)
+
+with tab3:
+    st.subheader("버튼 클릭으로 정산 실행하기")
+    st.markdown("아래 버튼을 누르면 파이썬 스크립트가 **💰 비용 청구 내역** 탭에 등록된 변동비·고정비를 분석하여, 사육 중인 각 소마다 **변동비와 고정비를 1/n로 나누어** 할당합니다.")
+    
+    target_month = st.text_input("정산 대상 연월 (예: 2023-10)", value="2023-10")
+    
+    # 정산 전 요약 미리보기
+    preview_usage = pd.read_sql(f"""
+        SELECT t.test_name as 시험군, SUM(u.calculated_amount) as 변동비_합계
+        FROM monthly_usage u
+        JOIN testgroup_master t ON u.test_group_code = t.test_group_code
+        WHERE u.settlement_month = '{target_month}'
+        GROUP BY t.test_name
+    """, conn)
+    preview_fixed = pd.read_sql(f"SELECT SUM(total_billed_amount) as 고정비_합계 FROM monthly_fixedcost WHERE settlement_month = '{target_month}'", conn)
+    
+    if not preview_usage.empty or (not preview_fixed.empty and pd.notna(preview_fixed.iloc[0]['고정비_합계'])):
+        st.markdown(f"**[{target_month}] 정산 대상 비용 요약:**")
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            st.dataframe(preview_usage, use_container_width=True, hide_index=True)
+        with col_p2:
+            fixed_val = preview_fixed.iloc[0]['고정비_합계'] if pd.notna(preview_fixed.iloc[0]['고정비_합계']) else 0
+            st.metric("고정비 합계", f"{fixed_val:,.0f} 원")
+    
+    if st.button("🚀 정산 1/n 분배 및 누적원가 반영", type="primary"):
+        success, msg = distribute_monthly_costs(DB_FILE, target_month)
+        if success:
+            st.success(msg)
+            st.balloons()
+        else:
+            st.error(msg)
+            
+    st.markdown("---")
+    st.subheader(f"[{target_month}] 개체별 원가 적재 결과 (Cattle_Cost_Log)")
+    try:
+        df_log = pd.read_sql(f"SELECT cattle_id, settlement_month, allocated_variable_cost as 변동비_할당, allocated_fixed_cost as 고정비_할당, (allocated_variable_cost + allocated_fixed_cost) as 당월_추가원가 FROM cattle_cost_log WHERE settlement_month='{target_month}'", conn)
+        if df_log.empty:
+            st.info("해당 연월에 아직 정산된 내역이 없습니다.")
+        else:
+            st.dataframe(df_log, use_container_width=True, hide_index=True)
+    except:
+        st.info("아직 정산된 내역이 없습니다.")
+
+conn.close()

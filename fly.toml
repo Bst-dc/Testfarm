@@ -1,0 +1,33 @@
+# Fly.io 배포 설정 — 자세한 절차는 배포_가이드.md 참고
+# 주의: 머신은 반드시 1대만 유지할 것 (SQLite는 여러 대가 동시에 쓰면 깨진다)
+
+app = "hanwoo-farm-erp"   # ← 전 세계에서 겹치지 않는 이름으로 바꾸세요 (영문 소문자/숫자/하이픈)
+primary_region = "nrt"    # 도쿄. 한국에서 가장 가까운 지역
+
+[build]
+
+[env]
+  ERP_DB_DIR = "/data"
+
+[http_service]
+  internal_port = 8501
+  force_https = true
+  auto_stop_machines = "suspend"   # 안 쓸 때 잠재워 비용 절약
+  auto_start_machines = true       # 접속하면 자동으로 깨어남
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/_stcore/health"
+
+# DB가 저장되는 영구 볼륨. 재배포해도 이 안의 데이터는 유지된다.
+[[mounts]]
+  source = "erp_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
