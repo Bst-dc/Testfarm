@@ -23,3 +23,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# ===== IDE 로컬 설정 =====
+*.code-workspace
+.vscode/
