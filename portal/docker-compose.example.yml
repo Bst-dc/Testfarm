@@ -1,0 +1,48 @@
+# ============================================================
+# 예시 파일입니다. GCP Compute Engine VM 1대에서 시험농장 +
+# 스마트웹시스템 + 허브 페이지(Caddy)를 함께 띄울 때 사용하는 틀입니다.
+# 실제로 쓰려면:
+#   1. smart-web 서비스의 build/image/포트를 실제 스마트웹시스템에 맞게 수정
+#   2. Caddyfile.example 을 Caddyfile 로 복사하고 도메인을 실제 도메인으로 교체
+#   3. 이 파일을 docker-compose.yml 로 복사해 VM에서 `docker compose up -d`
+# ============================================================
+
+services:
+  farm:
+    build:
+      context: ..          # 저장소 루트의 Dockerfile 사용
+    environment:
+      - ERP_DB_DIR=/data
+      - ERP_PASSWORD=${ERP_PASSWORD}
+    volumes:
+      - farm_data:/data     # 영구 볼륨 — 컨테이너를 새로 올려도 DB 유지
+    restart: unless-stopped
+
+  smart-web:
+    # 스마트웹시스템 저장소/이미지에 맞게 교체
+    build:
+      context: ../../smart-web-system
+    environment:
+      - EXAMPLE_ENV=changeme
+    volumes:
+      - smart_web_data:/data
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./index.html:/var/www/portal/index.html
+      - caddy_data:/data
+    depends_on:
+      - farm
+      - smart-web
+    restart: unless-stopped
+
+volumes:
+  farm_data:
+  smart_web_data:
+  caddy_data:
