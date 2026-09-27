@@ -6,6 +6,7 @@ import io
 import glob
 import shutil
 import tempfile
+import html
 from datetime import datetime
 
 # ========== 데이터 저장 위치 ==========
@@ -438,6 +439,180 @@ def distribute_monthly_costs(db_file, settlement_month):
         conn.close()
         return False, f"오류 발생 (이미 정산된 연월일 수 있습니다): {e}"
 
+
+# ========== 결산 리포트 ==========
+# 시험군 배지 색상 팔레트. 시험군 수가 팔레트보다 많으면 순서대로 다시 돌려쓴다.
+_REPORT_GROUP_PALETTE = [
+    ("bg-blue-100", "text-blue-700"),
+    ("bg-amber-100", "text-amber-700"),
+    ("bg-emerald-100", "text-emerald-700"),
+    ("bg-rose-100", "text-rose-700"),
+    ("bg-violet-100", "text-violet-700"),
+    ("bg-cyan-100", "text-cyan-700"),
+]
+
+
+def list_settled_months(db_file):
+    """cattle_cost_log 에 이미 정산 기록이 있는 연월 목록 (최신순)."""
+    if not os.path.exists(db_file):
+        return []
+    conn = db_connect(db_file)
+    try:
+        df = pd.read_sql(
+            "SELECT DISTINCT settlement_month FROM cattle_cost_log ORDER BY settlement_month DESC",
+            conn,
+        )
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    return df['settlement_month'].tolist()
+
+
+def generate_settlement_report(db_file, farm_name, settlement_month):
+    """정산월 결산 리포트를 인쇄 가능한 HTML 문서(문자열)로 만든다.
+
+    반환값: (성공여부, HTML 문자열 또는 오류 메시지)
+    """
+    conn = db_connect(db_file)
+    try:
+        log_df = pd.read_sql(
+            """
+            SELECT l.cattle_id, c.test_group_code, t.test_name,
+                   l.allocated_variable_cost, l.allocated_fixed_cost
+            FROM cattle_cost_log l
+            LEFT JOIN cattle c ON l.cattle_id = c.cattle_id
+            LEFT JOIN testgroup_master t ON c.test_group_code = t.test_group_code
+            WHERE l.settlement_month = ?
+            ORDER BY c.test_group_code, l.cattle_id
+            """,
+            conn,
+            params=(settlement_month,),
+        )
+    finally:
+        conn.close()
+
+    if log_df.empty:
+        return False, "해당 연월에 정산된 내역이 없습니다. 먼저 '월말 정산' 탭에서 정산을 실행하세요."
+
+    head_count = len(log_df)
+    total_variable = float(log_df['allocated_variable_cost'].fillna(0).sum())
+    total_fixed = float(log_df['allocated_fixed_cost'].fillna(0).sum())
+
+    group_codes = sorted({g for g in log_df['test_group_code'].tolist() if g})
+    color_map = {g: _REPORT_GROUP_PALETTE[i % len(_REPORT_GROUP_PALETTE)] for i, g in enumerate(group_codes)}
+
+    def esc(value):
+        return html.escape(str(value)) if pd.notna(value) else ""
+
+    row_html_parts = []
+    for _, row in log_df.iterrows():
+        gcode = row['test_group_code']
+        gname = row['test_name'] if pd.notna(row['test_name']) else (gcode or "미지정")
+        bg, fg = color_map.get(gcode, ("bg-slate-100", "text-slate-700"))
+        v_cost = float(row['allocated_variable_cost'] or 0)
+        f_cost = float(row['allocated_fixed_cost'] or 0)
+        row_html_parts.append(f"""
+        <tr class="hover:bg-slate-50 transition-colors">
+            <td class="py-4 px-5 text-sm font-bold text-slate-700">{esc(row['cattle_id'])}</td>
+            <td class="py-4 px-5 text-sm text-center">
+                <span class="px-3 py-1 rounded-full text-xs font-bold {bg} {fg}">{esc(gname)}</span>
+            </td>
+            <td class="py-4 px-5 text-sm text-right font-medium text-slate-600">{v_cost:,.0f}</td>
+            <td class="py-4 px-5 text-sm text-right font-medium text-slate-600">{f_cost:,.0f}</td>
+            <td class="py-4 px-5 text-sm text-right font-bold text-indigo-600 bg-indigo-50/30">{v_cost + f_cost:,.0f}</td>
+        </tr>""")
+
+    generated_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    html_doc = f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>{esc(settlement_month)} 시험농장 결산 리포트</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+    body {{ font-family: 'Pretendard', sans-serif; }}
+    @media print {{
+        body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; background-color: white !important; }}
+        .no-print {{ display: none; }}
+    }}
+</style>
+</head>
+<body class="bg-slate-50 p-4 md:p-8 text-slate-800">
+    <div class="max-w-[210mm] mx-auto bg-white p-10 md:p-12 shadow-2xl rounded-xl border border-slate-100">
+
+        <div class="border-b-4 border-slate-900 pb-6 mb-10 flex justify-between items-end">
+            <div>
+                <p class="text-indigo-600 font-bold tracking-wider text-sm mb-1">{esc(farm_name)}</p>
+                <h1 class="text-4xl font-extrabold text-slate-900">월간 원가 및 사양 결산서</h1>
+            </div>
+            <div class="text-right">
+                <p class="text-2xl font-bold text-slate-700 bg-slate-100 px-4 py-1 rounded-md">{esc(settlement_month)}</p>
+                <p class="text-slate-400 text-sm mt-2">출력일자: {generated_at}</p>
+            </div>
+        </div>
+
+        <section class="mb-12">
+            <h2 class="text-xl font-bold text-slate-800 mb-5 flex items-center">
+                <span class="w-2 h-6 bg-indigo-600 rounded mr-3"></span>
+                원가 배부 총괄 요약
+            </h2>
+            <div class="grid grid-cols-3 gap-6">
+                <div class="bg-gradient-to-br from-slate-50 to-slate-100 p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <p class="text-sm text-slate-500 font-bold mb-1">당월 정산 두수</p>
+                    <p class="text-3xl font-black text-slate-800">{head_count} <span class="text-lg font-medium text-slate-500">두</span></p>
+                </div>
+                <div class="bg-gradient-to-br from-indigo-50 to-indigo-100 p-6 rounded-xl border border-indigo-200 shadow-sm">
+                    <p class="text-sm text-indigo-600 font-bold mb-1">당월 총 변동비 (사료/약품)</p>
+                    <p class="text-3xl font-black text-indigo-900">{total_variable:,.0f} <span class="text-lg font-medium text-indigo-600">원</span></p>
+                </div>
+                <div class="bg-gradient-to-br from-emerald-50 to-emerald-100 p-6 rounded-xl border border-emerald-200 shadow-sm">
+                    <p class="text-sm text-emerald-600 font-bold mb-1">당월 총 고정비 (인건비/전기 등)</p>
+                    <p class="text-3xl font-black text-emerald-900">{total_fixed:,.0f} <span class="text-lg font-medium text-emerald-600">원</span></p>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2 class="text-xl font-bold text-slate-800 mb-5 flex items-center">
+                <span class="w-2 h-6 bg-emerald-500 rounded mr-3"></span>
+                개체별 당월 원가 배부 명세서 (사육일수 비례 배분)
+            </h2>
+            <div class="overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+                <table class="min-w-full bg-white">
+                    <thead class="bg-slate-900 text-white">
+                        <tr>
+                            <th class="py-4 px-5 text-left font-semibold text-sm">개체번호</th>
+                            <th class="py-4 px-5 text-center font-semibold text-sm">시험군</th>
+                            <th class="py-4 px-5 text-right font-semibold text-sm">배부 변동비 (원)</th>
+                            <th class="py-4 px-5 text-right font-semibold text-sm">배부 고정비 (원)</th>
+                            <th class="py-4 px-5 text-right font-semibold text-sm text-indigo-300">당월 총원가 (원)</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        {''.join(row_html_parts)}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <div class="mt-16 text-center text-sm font-medium text-slate-400 border-t border-slate-100 pt-6">
+            본 문서는 '한우 시험농장 관리 시스템'에 의해 자동 생성되었습니다.
+        </div>
+
+        <div class="mt-8 text-center no-print">
+            <button onclick="window.print()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transition-transform transform hover:-translate-y-1">
+                PDF 인쇄 및 저장
+            </button>
+        </div>
+    </div>
+</body>
+</html>"""
+    return True, html_doc
+
+
 # ========== UI 메인 ==========
 
 # 이전 실행(rerun)에서 닫히지 않은 연결부터 정리한다. -> "database is locked" 방지
@@ -632,7 +807,7 @@ col_m3.metric("누적 매입 건수", f"{purchase_count} 건")
 col_m4.metric("누적 정산 건수", f"{log_count} 건")
 st.markdown("---")
 
-tab_cattle, tab1, tab0, tab2, tab3 = st.tabs(["🐄 개체 관리", "📊 사육 및 재고 현황", "📦 품목·매입 관리", "💰 비용 청구 내역 (월말)", "🚀 월말 정산(1/n) 실행"])
+tab_cattle, tab1, tab0, tab2, tab3, tab_report = st.tabs(["🐄 개체 관리", "📊 사육 및 재고 현황", "📦 품목·매입 관리", "💰 비용 청구 내역 (월말)", "🚀 월말 정산(일할계산) 실행", "🧾 결산 리포트"])
 
 # ===== 개체 관리 탭 =====
 with tab_cattle:
@@ -1484,5 +1659,36 @@ with tab3:
             st.dataframe(df_log, use_container_width=True, hide_index=True)
     except:
         st.info("아직 정산된 내역이 없습니다.")
+
+with tab_report:
+    st.subheader("🧾 결산 리포트 생성")
+    st.markdown("정산이 완료된 연월을 골라 인쇄·저장 가능한 결산서(HTML)를 만듭니다. 브라우저에서 열어 **PDF 인쇄 및 저장** 버튼으로 PDF로도 저장할 수 있습니다.")
+
+    settled_months = list_settled_months(DB_FILE)
+    if not settled_months:
+        st.info("아직 정산된 연월이 없습니다. 먼저 '🚀 월말 정산(일할계산) 실행' 탭에서 정산을 실행하세요.")
+    else:
+        report_month = st.selectbox("리포트 연월", settled_months, key="report_month_select")
+        if st.button("📄 결산 리포트 생성", type="primary", key="gen_report_btn"):
+            ok, result = generate_settlement_report(DB_FILE, selected_farm, report_month)
+            if ok:
+                st.session_state["report_html"] = result
+                st.session_state["report_month_generated"] = report_month
+            else:
+                st.session_state.pop("report_html", None)
+                st.error(result)
+
+        report_html = st.session_state.get("report_html")
+        if report_html and st.session_state.get("report_month_generated") == report_month:
+            st.success(f"'{report_month}' 결산 리포트가 생성되었습니다.")
+            st.download_button(
+                "⬇️ HTML 파일로 내려받기",
+                report_html.encode("utf-8"),
+                file_name=f"결산리포트_{selected_farm}_{report_month}.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+            st.markdown("###### 미리보기")
+            st.iframe(report_html, height=900)
 
 conn.close()
