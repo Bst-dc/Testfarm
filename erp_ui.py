@@ -378,37 +378,65 @@ def init_db(farm_name):
     conn.close()
 
 def distribute_monthly_costs(db_file, settlement_month):
+    import calendar
+    from datetime import datetime
     conn = db_connect(db_file)
-    cattle_df = pd.read_sql("SELECT cattle_id, test_group_code FROM cattle WHERE status = '사육'", conn)
+    query = f"""
+        SELECT cattle_id, test_group_code, admission_date, closure_date
+        FROM cattle 
+        WHERE status = '사육' 
+        AND (admission_date IS NULL OR strftime('%Y-%m', admission_date) <= '{settlement_month}')
+    """
+    cattle_df = pd.read_sql(query, conn)
     
     if cattle_df.empty:
         conn.close()
-        return False, "사육 중인 개체가 없습니다."
+        return False, "사육 중이거나 정산월에 포함되는 개체가 없습니다."
 
-    total_rearing_count = len(cattle_df)
-    group_counts = cattle_df.groupby('test_group_code').size().to_dict()
+    year, month = map(int, settlement_month.split('-'))
+    last_day = calendar.monthrange(year, month)[1]
+    month_start = datetime(year, month, 1)
+    month_end = datetime(year, month, last_day)
+    
+    def calc_days(row):
+        adm = row['admission_date']
+        adm_d = datetime.strptime(str(adm)[:10], '%Y-%m-%d') if pd.notna(adm) and str(adm).strip() else month_start
+        start = max(month_start, adm_d)
+        end = month_end
+        if start > end: return 0
+        return (end - start).days + 1
+
+    cattle_df['rearing_days'] = cattle_df.apply(calc_days, axis=1)
+    cattle_df = cattle_df[cattle_df['rearing_days'] > 0]
+    
+    if cattle_df.empty:
+        conn.close()
+        return False, "해당 월에 실제 사육일수가 있는 개체가 없습니다."
+
+    total_farm_days = cattle_df['rearing_days'].sum()
+    group_days = cattle_df.groupby('test_group_code')['rearing_days'].sum().to_dict()
 
     fixed_cost_df = pd.read_sql(f"SELECT SUM(total_billed_amount) as total_fixed_cost FROM monthly_fixedcost WHERE settlement_month = '{settlement_month}'", conn)
-    total_fixed_cost = fixed_cost_df['total_fixed_cost'].iloc[0]
-    total_fixed_cost = total_fixed_cost if pd.notna(total_fixed_cost) else 0
-    fixed_cost_per_head = total_fixed_cost / total_rearing_count if total_rearing_count > 0 else 0
+    total_fixed_cost = float(fixed_cost_df['total_fixed_cost'].iloc[0]) if pd.notna(fixed_cost_df['total_fixed_cost'].iloc[0]) else 0.0
 
     usage_df = pd.read_sql(f"SELECT test_group_code, SUM(calculated_amount) as total_variable_cost FROM monthly_usage WHERE settlement_month = '{settlement_month}' GROUP BY test_group_code", conn)
-    
-    variable_cost_per_head = {}
-    for _, row in usage_df.iterrows():
-        t_group = row['test_group_code']
-        total_v_cost = row['total_variable_cost']
-        count = group_counts.get(t_group, 0)
-        variable_cost_per_head[t_group] = (total_v_cost / count) if count > 0 else 0
+    group_vcost = dict(zip(usage_df['test_group_code'], usage_df['total_variable_cost']))
 
     log_data = []
     for _, row in cattle_df.iterrows():
+        t_group = row['test_group_code']
+        days = row['rearing_days']
+        
+        f_cost = (total_fixed_cost * days / total_farm_days) if total_farm_days > 0 else 0
+        g_days = group_days.get(t_group, 0)
+        v_total = float(group_vcost.get(t_group, 0))
+        v_cost = (v_total * days / g_days) if g_days > 0 else 0
+        
         log_data.append({
             'cattle_id': row['cattle_id'],
             'settlement_month': settlement_month,
-            'allocated_variable_cost': round(variable_cost_per_head.get(row['test_group_code'], 0), 2),
-            'allocated_fixed_cost': round(fixed_cost_per_head, 2)
+            'allocated_variable_cost': round(v_cost, 2),
+            'allocated_fixed_cost': round(f_cost, 2)
         })
         
     log_df = pd.DataFrame(log_data)
@@ -416,7 +444,7 @@ def distribute_monthly_costs(db_file, settlement_month):
     try:
         log_df.to_sql('cattle_cost_log', conn, if_exists='append', index=False, method='multi')
         conn.close()
-        return True, f"'{settlement_month}' 개체별 원가 정산 분배가 완료되었습니다. (총 {len(log_df)}마리 적용)"
+        return True, f"'{settlement_month}' 개체별 일할계산(사육일수 비례) 정산이 완료되었습니다. (총 {len(log_df)}마리 적용)"
     except Exception as e:
         conn.close()
         return False, f"오류 발생 (이미 정산된 연월일 수 있습니다): {e}"
@@ -1168,9 +1196,39 @@ with tab0:
                     st.warning("품목코드와 품목명을 모두 입력하세요.")
         
         st.markdown("---")
-        st.markdown("##### 등록된 품목 목록")
+        st.markdown("##### 등록된 품목 목록 (체크박스로 삭제 가능)")
         df_items_all = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
-        st.dataframe(df_items_all, use_container_width=True, hide_index=True)
+        df_items_all.insert(0, "삭제", False)
+        
+        edited_item_df = st.data_editor(
+            df_items_all,
+            use_container_width=True,
+            hide_index=True,
+            disabled=["품목코드", "현재재고", "이동평균단가"],
+            num_rows="dynamic",
+            key="item_master_editor"
+        )
+        
+        if st.button("품목 수정 사항 저장", type="secondary", use_container_width=True):
+            write_conn = db_connect(DB_FILE)
+            current_codes = edited_item_df[~edited_item_df["삭제"]]['품목코드'].dropna().tolist()
+            
+            for _, row in edited_item_df.iterrows():
+                if not row.get("삭제", False) and pd.notna(row['품목코드']):
+                    write_conn.execute("UPDATE item_master SET item_name=?, category=? WHERE item_code=?", (row['품목명'], row['분류'], row['품목코드']))
+            
+            original_codes = df_items_all['품목코드'].dropna().tolist()
+            missing_codes = set(original_codes) - set(current_codes)
+            for code in missing_codes:
+                try:
+                    write_conn.execute("DELETE FROM item_master WHERE item_code=?", (code,))
+                except sqlite3.IntegrityError:
+                    st.error(f"'{code}' 품목은 매입 등 사용 내역이 있어 삭제할 수 없습니다.")
+            
+            write_conn.commit()
+            write_conn.close()
+            st.success("품목 내역이 업데이트 되었습니다.")
+            st.rerun()
     
     with col_right:
         st.subheader("🚚 매입(입고) 등록")
@@ -1210,17 +1268,60 @@ with tab0:
                         st.warning("수량과 금액을 올바르게 입력하세요.")
         
         st.markdown("---")
-        st.markdown("##### 매입 내역")
+        st.markdown("##### 매입 내역 (체크박스로 삭제 가능)")
         df_purchase = pd.read_sql("""
             SELECT p.purchase_id as 매입ID, p.purchase_date as 매입일자, 
-                   i.item_name as 품목명, i.category as 분류,
+                   p.item_code as 품목코드, i.item_name as 품목명,
                    p.quantity as 수량, p.total_amount as 총금액,
                    ROUND(p.total_amount / p.quantity, 0) as 단가
             FROM purchase p
             JOIN item_master i ON p.item_code = i.item_code
             ORDER BY p.purchase_date DESC
         """, conn)
-        st.dataframe(df_purchase, use_container_width=True, hide_index=True)
+        df_purchase.insert(0, "삭제", False)
+        
+        edited_purchase_df = st.data_editor(
+            df_purchase,
+            use_container_width=True,
+            hide_index=True,
+            disabled=["매입ID", "품목명", "단가"],
+            num_rows="dynamic",
+            key="purchase_editor"
+        )
+        
+        if st.button("매입 수정 사항 저장", type="secondary", use_container_width=True):
+            write_conn = db_connect(DB_FILE)
+            current_ids = edited_purchase_df[~edited_purchase_df["삭제"]]['매입ID'].dropna().tolist()
+            
+            for _, row in edited_purchase_df.iterrows():
+                if not row.get("삭제", False):
+                    pid = row['매입ID']
+                    if pd.notna(pid):
+                        write_conn.execute("UPDATE purchase SET purchase_date=?, item_code=?, quantity=?, total_amount=? WHERE purchase_id=?", 
+                                         (row['매입일자'], row['품목코드'], row['수량'], row['총금액'], pid))
+                    else:
+                        if pd.notna(row['매입일자']) and pd.notna(row['품목코드']):
+                            write_conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, total_amount) VALUES (?, ?, ?, ?)",
+                                             (row['매입일자'], row['품목코드'], row['수량'], row['총금액']))
+            
+            original_ids = df_purchase['매입ID'].dropna().tolist()
+            missing_ids = set(original_ids) - set(current_ids)
+            for mid in missing_ids:
+                write_conn.execute("DELETE FROM purchase WHERE purchase_id=?", (mid,))
+                
+            # 전체 품목 재고 및 단가 재계산
+            items = pd.read_sql("SELECT item_code FROM item_master", write_conn)
+            for item in items['item_code']:
+                purchases = pd.read_sql(f"SELECT quantity, total_amount FROM purchase WHERE item_code='{item}' ORDER BY purchase_date ASC", write_conn)
+                stock = float(purchases['quantity'].sum()) if not purchases.empty else 0.0
+                total_val = float(purchases['total_amount'].sum()) if not purchases.empty else 0.0
+                avg_price = round(total_val / stock, 2) if stock > 0 else 0
+                write_conn.execute("UPDATE item_master SET current_stock=?, moving_avg_price=? WHERE item_code=?", (stock, avg_price, item))
+                
+            write_conn.commit()
+            write_conn.close()
+            st.success("매입 내역이 업데이트 및 재고가 재계산 되었습니다.")
+            st.rerun()
 
 with tab2:
     st.subheader("월말 비용 등록 및 조회")
@@ -1287,7 +1388,7 @@ with tab2:
         
         with st.form("add_fixedcost_form", clear_on_submit=True):
             fc_month = st.text_input("정산연월 ", value="2023-10", help="형식: YYYY-MM")
-            fc_item = st.selectbox("지출 항목", ["인건비", "전기세", "수도세", "감가상각비", "수리유지비", "기타"])
+            fc_item = st.selectbox("지출 항목", ["인건비", "전기세", "시험사양수고비", "CCTV사용료", "우수등급장려금", "기타"])
             fc_amount = st.number_input("총 청구금액 (원)", min_value=0, step=10000)
             
             submitted_fc = st.form_submit_button("고정비 등록", type="primary", use_container_width=True)
@@ -1306,14 +1407,50 @@ with tab2:
                     st.warning("정산연월과 금액을 올바르게 입력하세요.")
         
         st.markdown("---")
-        st.markdown("##### 등록된 고정비 내역")
+        st.markdown("##### 등록된 고정비 내역 (체크박스로 삭제 가능)")
         df_fixed = pd.read_sql("""
             SELECT fixed_cost_id as ID, settlement_month as 정산연월,
                    expense_item as 지출항목, total_billed_amount as 총청구금액
             FROM monthly_fixedcost
             ORDER BY settlement_month DESC
         """, conn)
-        st.dataframe(df_fixed, use_container_width=True, hide_index=True)
+        df_fixed.insert(0, "삭제", False)
+        
+        edited_fc_df = st.data_editor(
+            df_fixed,
+            use_container_width=True,
+            hide_index=True,
+            disabled=["ID"],
+            num_rows="dynamic",
+            key="fixedcost_editor"
+        )
+        
+        if st.button("고정비 수정 사항 저장", type="secondary", use_container_width=True):
+            write_conn = db_connect(DB_FILE)
+            current_ids = edited_fc_df[~edited_fc_df["삭제"]]['ID'].dropna().tolist()
+            
+            original_ids = df_fixed['ID'].dropna().tolist()
+            missing_ids = set(original_ids) - set(current_ids)
+            for mid in missing_ids:
+                write_conn.execute("DELETE FROM monthly_fixedcost WHERE fixed_cost_id=?", (int(mid),))
+                
+            for _, row in edited_fc_df.iterrows():
+                if not row.get("삭제", False) and pd.notna(row['정산연월']) and str(row['정산연월']).strip() != "":
+                    fid = row['ID']
+                    if pd.isna(fid):
+                        write_conn.execute(
+                            "INSERT INTO monthly_fixedcost (settlement_month, expense_item, total_billed_amount) VALUES (?, ?, ?)",
+                            (row['정산연월'], row['지출항목'], row['총청구금액'])
+                        )
+                    else:
+                        write_conn.execute(
+                            "UPDATE monthly_fixedcost SET settlement_month=?, expense_item=?, total_billed_amount=? WHERE fixed_cost_id=?",
+                            (row['정산연월'], row['지출항목'], row['총청구금액'], int(fid))
+                        )
+            write_conn.commit()
+            write_conn.close()
+            st.success("고정비 내역이 업데이트 되었습니다.")
+            st.rerun()
 
 with tab3:
     st.subheader("버튼 클릭으로 정산 실행하기")
