@@ -7,7 +7,17 @@ import glob
 import shutil
 import tempfile
 import html
+import base64
 from datetime import datetime
+
+# ========== 로고/아이콘 ==========
+_ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+
+def _load_data_uri(filename, mime):
+    with open(os.path.join(_ASSETS_DIR, filename), "rb") as f:
+        return f"data:{mime};base64," + base64.b64encode(f.read()).decode("ascii")
+
+MEDAL_ICON_DATA_URI = _load_data_uri("medal_icon.gif", "image/gif")
 
 # ========== 데이터 저장 위치 ==========
 # 로컬 PC와 클라우드(영구 볼륨)에서 같은 코드가 돌아가도록 경로를 환경변수로 분리한다.
@@ -29,7 +39,7 @@ try:
 except OSError:
     MANUAL_BACKUP_DIR = BACKUP_DIR
 
-st.set_page_config(page_title="한우 시험농장 관리 시스템", layout="wide", page_icon="🐮")
+st.set_page_config(page_title="대구축협 시험농장 관리 시스템", layout="wide", page_icon="🐮")
 
 st.markdown(
     """
@@ -120,6 +130,12 @@ st.markdown(
         font-size: 20px !important;
         font-weight: 700 !important;
         margin: 0;
+    }
+    /* Streamlit 기본 탭 활성화 시 나타나는 하단 붉은 선(Indicator) 제거
+       (실제 DOM에서는 stTab 안의 .react-aria-SelectionIndicator 요소였음 —
+        stTabIndicator/tab-highlight 셀렉터는 존재하지 않는 이름이라 안 지워지고 있었음) */
+    div[data-testid="stTab"] .react-aria-SelectionIndicator {
+        display: none !important;
     }
 
     /* 사이드바 라디오 버튼(농장 선택)을 크고 예쁜 글래스 카드로 변경
@@ -517,7 +533,7 @@ def require_password():
             expected = None
     if not expected or st.session_state.get("_authed"):
         return
-    st.markdown("## 🔒 한우 시험농장 관리 시스템")
+    st.markdown("## 🔒 대구축협 시험농장 관리 시스템")
     pw = st.text_input("접속 비밀번호", type="password")
     if pw:
         if pw == expected:
@@ -842,7 +858,7 @@ def generate_settlement_report(db_file, farm_name, settlement_month):
         </section>
 
         <div class="mt-16 text-center text-sm font-medium text-slate-400 border-t border-slate-100 pt-6">
-            본 문서는 '한우 시험농장 관리 시스템'에 의해 자동 생성되었습니다.
+            본 문서는 '대구축협 시험농장 관리 시스템'에 의해 자동 생성되었습니다.
         </div>
 
         <div class="mt-8 text-center no-print">
@@ -866,97 +882,24 @@ require_password()
 
 # 사이드바: 농장 선택
 st.sidebar.markdown(
-    """
-    <div style="text-align:center; padding: 10px 0 20px 0;">
+    f"""
+    <div style="display:flex; align-items:center; justify-content:center; gap:10px; padding: 10px 0 20px 0;">
+        <img src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 40px;">
         <span style="font-size: 2.5rem;">🐮</span>
-        <h2 style="margin:0; font-size:1.2rem;">한우 시험농장<br>관리 시스템</h2>
+        <h2 style="margin:0; font-size:1.2rem; text-align:left;">대구축협 시험농장<br>관리 시스템</h2>
     </div>
     """,
     unsafe_allow_html=True,
 )
 st.sidebar.markdown("---")
 
-farm_names = ["🌟 시험농장 전체 현황"] + list(FARM_CONFIG.keys())
+farm_names = ["시험농장 전체 현황"] + list(FARM_CONFIG.keys())
 selected_farm = st.sidebar.radio(
     "메뉴 및 농장 선택",
     farm_names,
     index=0,
     help="전체 현황 대시보드를 보거나, 정산을 수행할 농장을 선택하세요."
 )
-
-if selected_farm == "🌟 시험농장 전체 현황":
-    st.title("한우 시험농장 관리 시스템")
-    st.markdown("데이터베이스 트리거에 의한 **단가 자동 갱신** 및 Pandas를 이용한 **월말 1/n 비용 분배**를 시각적으로 확인하는 대시보드입니다.")
-    st.subheader("🌐 전농장 통합 대시보드")
-    st.caption("등록된 모든 관리 농장(선산, 고아 등)의 개체 현황을 통합하여 보여줍니다.")
-    
-    all_cattle_dfs = []
-    
-    for farm_nm, farm_cfg_info in FARM_CONFIG.items():
-        f_db = farm_cfg_info["db_file"]
-        if os.path.exists(f_db):
-            try:
-                f_conn = sqlite3.connect(f_db)
-                df_f = pd.read_sql("SELECT cattle_id as 개체번호, status as 상태, admission_date as 입식일, castration_date as 거세일, closure_date as 종결일 FROM cattle", f_conn)
-                df_f['농장명'] = farm_nm
-                all_cattle_dfs.append(df_f)
-                f_conn.close()
-            except Exception as e:
-                pass
-                
-    if all_cattle_dfs:
-        df_all = pd.concat(all_cattle_dfs, ignore_index=True)
-        
-        total_admission = len(df_all)
-        current_breeding = len(df_all[df_all['상태'] == '사육'])
-        dead_cattle = len(df_all[df_all['상태'] == '폐사'])
-        shipped_cattle = len(df_all[df_all['상태'] == '출하'])
-        castrated_cattle = len(df_all[df_all['거세일'].notna() & (df_all['거세일'].astype(str).str.strip() != '')])
-        
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("전체 누적 입식", f"{total_admission}두")
-        m2.metric("현재 사육중", f"{current_breeding}두")
-        m3.metric("누적 폐사", f"{dead_cattle}두")
-        m4.metric("누적 출하", f"{shipped_cattle}두")
-        m5.metric("거세 완료", f"{castrated_cattle}두")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        dash_c1, dash_c2 = st.columns(2)
-        with dash_c1:
-            st.markdown("##### 🏢 농장별 현재 사육 현황 (사육중)")
-            farm_breed_cnt = df_all[df_all['상태'] == '사육'].groupby('농장명').size().reset_index(name='마릿수')
-            if not farm_breed_cnt.empty:
-                st.bar_chart(farm_breed_cnt.set_index('농장명'))
-            else:
-                st.info("사육 중인 개체가 없습니다.")
-                
-            st.markdown("##### 🗓️ 월별 전체 입식 현황")
-            df_all['입식월'] = df_all['입식일'].str[:7]
-            monthly_adm = df_all[df_all['입식월'].notna()].groupby('입식월').size().reset_index(name='마릿수')
-            if not monthly_adm.empty:
-                st.bar_chart(monthly_adm.set_index('입식월'))
-                
-        with dash_c2:
-            st.markdown("##### ⚠️ 농장별 폐사 현황 (누적)")
-            farm_dead_cnt = df_all[df_all['상태'] == '폐사'].groupby('농장명').size().reset_index(name='마릿수')
-            if not farm_dead_cnt.empty:
-                st.bar_chart(farm_dead_cnt.set_index('농장명'))
-            else:
-                st.info("폐사된 개체가 없습니다.")
-                
-            st.markdown("##### 🔪 농장별 거세 현황 (누적)")
-            farm_cast_cnt = df_all[df_all['거세일'].notna() & (df_all['거세일'].astype(str).str.strip() != '')].groupby('농장명').size().reset_index(name='마릿수')
-            if not farm_cast_cnt.empty:
-                st.bar_chart(farm_cast_cnt.set_index('농장명'))
-            else:
-                st.info("거세된 개체가 없습니다.")
-                
-        with st.expander("통합 데이터 상세 표"):
-            st.dataframe(df_all, use_container_width=True, hide_index=True)
-    else:
-        st.info("데이터가 있는 농장이 없습니다.")
-    st.stop()
 
 with st.sidebar.expander("➕ 새 농장 추가"):
     with st.form("add_farm_form", clear_on_submit=True):
@@ -971,12 +914,194 @@ with st.sidebar.expander("➕ 새 농장 추가"):
                     safe_name = re.sub(r'[\\/*?:"<>|]', "", new_farm_name)
                     new_db_filename = f"erp_{safe_name}.db"
                     FARM_CONFIG[new_farm_name] = {
-                        "db_filename": new_db_filename,
+                        "db_file": new_db_filename,
                         "color": new_farm_color
                     }
                     save_farms(FARM_CONFIG)
                     st.success(f"'{new_farm_name}' 농장이 추가되었습니다!")
                     st.rerun()
+
+
+if selected_farm == "시험농장 전체 현황":
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; gap:14px; margin-bottom:0.5rem;">
+            <img src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 44px;">
+            <h1 style="margin:0;">대구축협 시험농장 관리 시스템</h1>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("데이터베이스 트리거에 의한 **단가 자동 갱신** 및 Pandas를 이용한 **월말 1/n 비용 분배**를 시각적으로 확인하는 대시보드입니다.")
+    st.subheader("🌐 농장 통합 대시보드")
+    st.caption("등록된 모든 관리 농장(선산, 고아 등)의 개체 현황을 통합하여 보여줍니다.")
+    
+    all_cattle_dfs = []
+    
+    for farm_nm, farm_cfg_info in FARM_CONFIG.items():
+        f_db = farm_cfg_info["db_file"]
+        if os.path.exists(f_db):
+            try:
+                f_conn = sqlite3.connect(f_db)
+                df_f = pd.read_sql("SELECT cattle_id as 개체번호, status as 상태, admission_date as 입식일, castration_date as 거세일, closure_date as 종결일, initial_cost as 초기원가, market_name as 우시장 FROM cattle", f_conn)
+                df_f['농장명'] = farm_nm
+                all_cattle_dfs.append(df_f)
+                f_conn.close()
+            except Exception as e:
+                pass
+                
+    if all_cattle_dfs:
+        df_all = pd.concat(all_cattle_dfs, ignore_index=True)
+        
+        total_admission = len(df_all)
+        current_breeding = len(df_all[df_all['상태'] == '사육'])
+        dead_cattle = len(df_all[df_all['상태'] == '폐사'])
+        shipped_cattle = len(df_all[df_all['상태'] == '출하'])
+        total_initial_cost = int(df_all['초기원가'].sum(skipna=True)) if '초기원가' in df_all.columns else 0
+        
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("전체 누적 입식", f"{total_admission}두")
+        m2.metric("현재 사육중", f"{current_breeding}두")
+        m3.metric("누적 폐사", f"{dead_cattle}두")
+        m4.metric("누적 출하", f"{shipped_cattle}두")
+        m5.metric("총 구입비용", f"{total_initial_cost // 10000:,}만원")
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        st.markdown("##### 🏢 농장별 요약 현황")
+        farm_summary = df_all.groupby('농장명').agg(
+            전체입식=('개체번호', 'count'),
+            사육중=('상태', lambda x: (x == '사육').sum()),
+            출하=('상태', lambda x: (x == '출하').sum()),
+            폐사=('상태', lambda x: (x == '폐사').sum()),
+            총구입비용_만원=('초기원가', lambda x: int(x.sum(skipna=True)) // 10000 if '초기원가' in df_all.columns else 0),
+            평균구입금액_만원=('초기원가', lambda x: int(x.mean(skipna=True)) // 10000 if '초기원가' in df_all.columns and not x.isna().all() else 0)
+        ).reset_index()
+        
+        farm_summary.rename(columns={
+            '전체입식': '전체 입식 (두)', 
+            '사육중': '현재 사육중 (두)', 
+            '출하': '누적 출하 (두)', 
+            '폐사': '누적 폐사 (두)', 
+            '총구입비용_만원': '총 구입비용 (만원)',
+            '평균구입금액_만원': '두당 평균구입금액 (만원)'
+        }, inplace=True)
+        
+        for col in ['전체 입식 (두)', '현재 사육중 (두)', '누적 출하 (두)', '누적 폐사 (두)', '총 구입비용 (만원)', '두당 평균구입금액 (만원)']:
+            farm_summary[col] = farm_summary[col].apply(lambda x: f"{int(x):,}")
+            
+        st.dataframe(
+            farm_summary.style.set_properties(**{'text-align': 'center'})
+            .set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}]),
+            width="stretch", hide_index=True
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        st.markdown("##### 🏪 농장별 우시장 구입 현황")
+        df_market = df_all[df_all['우시장'].notna() & (df_all['우시장'].astype(str).str.strip() != '')]
+        if not df_market.empty:
+            market_summary = df_market.groupby(['농장명', '우시장']).agg(
+                구입마릿수=('개체번호', 'count'),
+                총구입비용_만원=('초기원가', lambda x: int(x.sum(skipna=True)) // 10000 if '초기원가' in df_market.columns else 0),
+                평균구입비용_만원=('초기원가', lambda x: int(x.mean(skipna=True)) // 10000 if '초기원가' in df_market.columns and not x.isna().all() else 0)
+            ).reset_index()
+            
+            market_summary.rename(columns={
+                '구입마릿수': '구입 마릿수 (두)',
+                '총구입비용_만원': '총 구입비용 (만원)',
+                '평균구입비용_만원': '두당 평균 (만원)'
+            }, inplace=True)
+            
+            for col in ['구입 마릿수 (두)', '총 구입비용 (만원)', '두당 평균 (만원)']:
+                market_summary[col] = market_summary[col].apply(lambda x: f"{int(x):,}")
+                
+            st.dataframe(
+                market_summary.style.set_properties(**{'text-align': 'center'})
+                .set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}]),
+                width="stretch", hide_index=True
+            )
+        else:
+            st.info("등록된 우시장 구입 이력이 없습니다.")
+            
+        st.markdown("<br>", unsafe_allow_html=True)
+                
+        with st.expander("통합 데이터 상세 표"):
+            df_all.insert(0, '순번', range(1, len(df_all) + 1))
+            st.dataframe(
+                df_all, 
+                width="stretch", 
+                hide_index=True,
+                column_config={"순번": st.column_config.NumberColumn(width=60)}
+            )
+            
+        st.markdown("---")
+        st.subheader("📑 통합 보고서 생성")
+        st.markdown("현재 전체 현황 대시보드의 요약 수치 및 농장별 데이터 표를 기반으로 인쇄 가능한 HTML 보고서를 생성합니다.")
+        if st.button("📄 보고서 생성", type="primary"):
+            market_html = market_summary.to_html(index=False, classes='table', justify='center') if not df_market.empty else '<p>우시장 구입 이력이 없습니다.</p>'
+            html_content = f"""
+            <html>
+            <head>
+                <meta charset="utf-8">
+                <title>대구축협 시험농장 현황 보고</title>
+                <style>
+                    body {{ font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; line-height: 1.6; padding: 20px; }}
+                    h1, h2, h3 {{ color: #333; }}
+                    .summary-box {{ display: flex; justify-content: space-between; background: #f4f4f4; padding: 15px; border-radius: 5px; margin-bottom: 20px; text-align: center; }}
+                    .metric {{ flex: 1; }}
+                    .metric .title {{ font-size: 14px; color: #666; }}
+                    .metric .value {{ font-size: 20px; font-weight: bold; color: #2c3e50; }}
+                    .table {{ width: 100%; border-collapse: collapse; margin-bottom: 30px; font-size: 14px; text-align: center; }}
+                    .table th, .table td {{ border: 1px solid #ddd; padding: 8px; }}
+                    .table th {{ background-color: #2c3e50; color: white; text-align: center !important; }}
+                    @media print {{
+                        .summary-box {{ border: 1px solid #ccc; }}
+                        .table th {{ color: black; }}
+                    }}
+                </style>
+            </head>
+            <body>
+                <div style="display: flex; align-items: center; justify-content: center; margin-bottom: 20px;">
+                    <img src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 40px; margin-right: 15px;">
+                    <h1 style="margin: 0;">대구축협 시험농장 현황 보고</h1>
+                </div>
+                <p><strong>생성일시:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                
+                <h2>1. 전체 요약 현황</h2>
+                <div class="summary-box">
+                    <div class="metric"><div class="title">전체 누적 입식</div><div class="value">{total_admission:,}두</div></div>
+                    <div class="metric"><div class="title">현재 사육중</div><div class="value">{current_breeding:,}두</div></div>
+                    <div class="metric"><div class="title">누적 폐사</div><div class="value">{dead_cattle:,}두</div></div>
+                    <div class="metric"><div class="title">누적 출하</div><div class="value">{shipped_cattle:,}두</div></div>
+                    <div class="metric"><div class="title">총 구입비용</div><div class="value">{total_initial_cost // 10000:,}만원</div></div>
+                </div>
+                
+                <h2>2. 농장별 요약 현황</h2>
+                {farm_summary.to_html(index=False, classes='table', justify='center')}
+                
+                <h2>3. 농장별 우시장 구입 현황</h2>
+                {market_html}
+            </body>
+            </html>
+            """
+            st.session_state["overall_report_html"] = html_content
+            
+        overall_html = st.session_state.get("overall_report_html")
+        if overall_html:
+            st.success("통합 보고서가 생성되었습니다.")
+            st.download_button(
+                "⬇️ HTML 파일로 내려받기",
+                overall_html.encode("utf-8"),
+                file_name=f"통합보고서_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+                mime="text/html",
+                width="stretch",
+            )
+            st.markdown("###### 미리보기")
+            st.components.v1.html(overall_html, height=800, scrolling=True)
+
+    else:
+        st.info("데이터가 있는 농장이 없습니다.")
+    st.stop()
 
 farm_cfg = FARM_CONFIG[selected_farm]
 DB_FILE = farm_cfg["db_file"]
@@ -998,7 +1123,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("##### 💾 데이터 백업")
 with st.sidebar.expander("백업 만들기 / 내려받기"):
     st.caption("저장 폴더: %s" % MANUAL_BACKUP_DIR)
-    if st.button("지금 백업 만들기", use_container_width=True):
+    if st.button("지금 백업 만들기", width="stretch"):
         try:
             saved = backup_db(DB_FILE, "manual", dest_dir=MANUAL_BACKUP_DIR)
             st.session_state["last_backup"] = saved
@@ -1014,7 +1139,7 @@ with st.sidebar.expander("백업 만들기 / 내려받기"):
                 fh.read(),
                 file_name=os.path.basename(last_backup),
                 mime="application/octet-stream",
-                use_container_width=True,
+                width="stretch",
             )
     kept = glob.glob(os.path.join(BACKUP_DIR, os.path.splitext(os.path.basename(DB_FILE))[0] + "_*.db"))
     st.caption("보관 중인 백업 %d개 · 매일 첫 접속 시 자동 백업 (최근 %d개 유지)" % (len(kept), BACKUP_KEEP))
@@ -1022,7 +1147,7 @@ with st.sidebar.expander("백업 만들기 / 내려받기"):
 with st.sidebar.expander("백업 파일로 복원"):
     st.caption("내려받아 둔 .db 백업 파일로 현재 데이터를 되돌립니다. 복원 직전 현재 상태도 자동 백업됩니다.")
     restore_file = st.file_uploader("백업 파일 선택", type=["db"], key="restore_uploader")
-    if restore_file is not None and st.button("이 파일로 덮어쓰기", use_container_width=True):
+    if restore_file is not None and st.button("이 파일로 덮어쓰기", width="stretch"):
         ok, msg = restore_db(DB_FILE, restore_file.getvalue())
         if ok:
             st.success(msg)
@@ -1088,11 +1213,11 @@ def reset_dialog(farm_name, db_file):
 
     pw = st.text_input("계속하려면 관리자 비밀번호를 입력하세요", type="password", key="reset_pw")
     col_cancel, col_run = st.columns(2)
-    if col_cancel.button("취소", use_container_width=True):
+    if col_cancel.button("취소", width="stretch"):
         st.session_state.pop("reset_pw", None)
         st.rerun()
     # disabled 를 쓰면 비밀번호를 입력한 직후 첫 클릭이 먹히지 않으므로, 눌렀을 때 검사한다.
-    if col_run.button("삭제하고 초기화", type="primary", use_container_width=True):
+    if col_run.button("삭제하고 초기화", type="primary", width="stretch"):
         if not pw:
             st.warning("비밀번호를 입력하세요.")
         elif pw != reset_password():
@@ -1108,7 +1233,7 @@ def reset_dialog(farm_name, db_file):
 st.sidebar.markdown("---")
 with st.sidebar.expander("⚠️ 초기 상태로 리셋"):
     st.caption(f"**{selected_farm}**의 데이터가 **전부 삭제**됩니다. 실행 직전 자동으로 백업본을 만듭니다.")
-    if st.button("리셋 실행", use_container_width=True):
+    if st.button("리셋 실행", width="stretch"):
         st.session_state.pop("reset_pw", None)
         st.session_state["show_reset_dialog"] = True
 
@@ -1131,7 +1256,15 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-st.title("한우 시험농장 관리 시스템")
+st.markdown(
+    f"""
+    <div style="display:flex; align-items:center; gap:14px; margin-bottom:0.5rem;">
+        <img src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 44px;">
+        <h1 style="margin:0;">대구축협 시험농장 관리 시스템</h1>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 st.markdown("데이터베이스 트리거에 의한 **단가 자동 갱신** 및 Pandas를 이용한 **월말 1/n 비용 분배**를 시각적으로 확인하는 대시보드입니다.")
 
 conn = db_connect(DB_FILE)
@@ -1149,7 +1282,7 @@ col_m3.metric("누적 매입 건수", f"{purchase_count} 건")
 col_m4.metric("누적 정산 건수", f"{log_count} 건")
 st.markdown("---")
 
-tab_cattle, tab1, tab0, tab2, tab3, tab_report = st.tabs(["🐄 개체 관리", "📊 사육 및 재고 현황", "📦 품목·매입 관리", "💰 비용 청구 내역 (월말)", "🚀 월말 정산(일할계산) 실행", "🧾 결산 리포트"])
+tab_cattle, tab1, tab0, tab2, tab_report, tab_slaughter = st.tabs(["🐄 개체 관리", "📊 사육 및 재고 현황", "📦 품목·매입 관리", "💰 월말 정산 및 청구 내역", "🧾 결산 리포트", "🥩 도축 성적"])
 
 # ===== 개체 관리 탭 =====
 with tab_cattle:
@@ -1163,58 +1296,33 @@ with tab_cattle:
             with st.form("add_group_form", clear_on_submit=True):
                 new_group_name = st.text_input("시험군 명칭", placeholder="예: 대조군, 처리군A 등")
                 new_group_start = st.date_input("시작일")
-                
-                st.markdown("**기존 개체 자동 할당 (선택)**")
-                st.caption("선택한 동과 우방에 있는 기존 개체들이 이 시험군으로 자동 소속됩니다.")
-                new_group_buildings = st.multiselect("대상 동 선택", [f"{i}동" for i in range(1, 7)])
-                new_group_pens = st.multiselect("대상 우방 선택", list(range(1, 21)))
-                
+
                 # 버튼 넓이를 절반으로 줄이기 위해 컬럼 사용
                 btn_g1, btn_g2 = st.columns(2)
                 with btn_g1:
-                    submitted_group = st.form_submit_button("시험군 등록", type="primary", use_container_width=True)
-                
+                    submitted_group = st.form_submit_button("시험군 등록", type="primary", width="stretch")
+
                 if submitted_group:
                     if new_group_name:
                         try:
                             wc = db_connect(DB_FILE)
                             # 코드를 입력받지 않고 명칭을 코드로 동일하게 사용
                             wc.execute("INSERT INTO testgroup_master VALUES (?, ?, ?, NULL)", (new_group_name, new_group_name, new_group_start.isoformat()))
-                            
-                            # 개체 자동 할당 로직
-                            assigned_cnt = 0
-                            if new_group_buildings or new_group_pens:
-                                conditions = []
-                                params = [new_group_name]
-                                if new_group_buildings:
-                                    conditions.append(f"building IN ({','.join(['?']*len(new_group_buildings))})")
-                                    params.extend(new_group_buildings)
-                                if new_group_pens:
-                                    conditions.append(f"pen_number IN ({','.join(['?']*len(new_group_pens))})")
-                                    params.extend(new_group_pens)
-                                
-                                query = f"UPDATE cattle SET test_group_code = ? WHERE " + " AND ".join(conditions)
-                                wc.execute(query, params)
-                                assigned_cnt = wc.execute("SELECT changes()").fetchone()[0]
-
                             wc.commit(); wc.close()
-                            
-                            if assigned_cnt > 0:
-                                st.success(f"시험군 '{new_group_name}' 등록 완료 (개체 {assigned_cnt}마리 자동 할당됨)")
-                            else:
-                                st.success(f"시험군 '{new_group_name}' 등록 완료")
+                            st.success(f"시험군 '{new_group_name}' 등록 완료")
                             st.rerun()
                         except sqlite3.IntegrityError:
                             wc.rollback(); wc.close()
                             st.error("이미 존재하는 시험군 명칭입니다.")
                     else:
                         st.warning("시험군 명칭을 입력하세요.")
-            
+            st.caption("기존 개체를 이 시험군으로 배정하려면 '상태 변경 / 질병 기록' 탭의 '개체 위치 및 시험군 이동'을 이용하세요.")
+
             st.markdown("---")
             st.markdown("##### 등록된 시험군")
             df_groups = pd.read_sql("SELECT test_group_code as 시험군코드, test_name as 시험명칭, start_date as 시작일, end_date as 종료일 FROM testgroup_master", conn)
             # 시험군코드는 UI 화면 테이블에서 숨김 처리
-            st.dataframe(df_groups[['시험명칭', '시작일', '종료일']], use_container_width=True, hide_index=True)
+            st.dataframe(df_groups[['시험명칭', '시작일', '종료일']], width="stretch", hide_index=True)
             
             if not df_groups.empty:
                 st.markdown("##### 📝 시험군 수정 / 삭제")
@@ -1223,52 +1331,24 @@ with tab_cattle:
                     group_opts = {r['시험명칭']: r['시험군코드'] for _, r in df_groups.iterrows()}
                     edit_target = st.selectbox("대상 시험군", list(group_opts.keys()))
                     edit_name = st.text_input("새 시험명칭", placeholder="새로운 명칭을 입력하세요 (명칭 변경시에만 입력)")
-                    
-                    st.markdown("**기존 개체 추가 편입 (선택)**")
-                    edit_buildings = st.multiselect("대상 동 선택", [f"{i}동" for i in range(1, 7)], key="edit_b")
-                    edit_pens = st.multiselect("대상 우방 선택", list(range(1, 21)), key="edit_p")
-                    st.caption("선택한 동과 우방에 있는 개체들이 이 시험군으로 소속이 변경됩니다.")
-                    
+
                     col_b1, col_b2 = st.columns(2)
                     with col_b1:
-                        submitted_edit = st.form_submit_button("수정", type="primary", use_container_width=True)
+                        submitted_edit = st.form_submit_button("수정", type="primary", width="stretch")
                     with col_b2:
-                        submitted_delete = st.form_submit_button("삭제", type="secondary", use_container_width=True)
-                        
+                        submitted_delete = st.form_submit_button("삭제", type="secondary", width="stretch")
+
                     if submitted_edit:
-                        target_code = group_opts[edit_target]
-                        wc = db_connect(DB_FILE)
-                        updates = []
-                        
                         if edit_name:
+                            target_code = group_opts[edit_target]
+                            wc = db_connect(DB_FILE)
                             wc.execute("UPDATE testgroup_master SET test_name = ? WHERE test_group_code = ?", (edit_name, target_code))
-                            updates.append("명칭 변경")
-                            
-                        assigned_cnt = 0
-                        if edit_buildings or edit_pens:
-                            conditions = []
-                            params = [target_code]
-                            if edit_buildings:
-                                conditions.append(f"building IN ({','.join(['?']*len(edit_buildings))})")
-                                params.extend(edit_buildings)
-                            if edit_pens:
-                                conditions.append(f"pen_number IN ({','.join(['?']*len(edit_pens))})")
-                                params.extend(edit_pens)
-                            
-                            query = f"UPDATE cattle SET test_group_code = ? WHERE " + " AND ".join(conditions)
-                            wc.execute(query, params)
-                            assigned_cnt = wc.execute("SELECT changes()").fetchone()[0]
-                            if assigned_cnt > 0:
-                                updates.append(f"개체 {assigned_cnt}마리 추가 편입")
-                                
-                        wc.commit(); wc.close()
-                        
-                        if updates:
-                            st.success(f"시험군 업데이트 완료: {', '.join(updates)}")
+                            wc.commit(); wc.close()
+                            st.success("시험군 명칭 수정 완료")
                             st.rerun()
                         else:
-                            st.info("수정된 내용이나 추가로 편입된 개체가 없습니다.")
-                    
+                            st.warning("새 시험명칭을 입력하세요.")
+
                     if submitted_delete:
                         target_code = group_opts[edit_target]
                         wc = db_connect(DB_FILE)
@@ -1282,7 +1362,8 @@ with tab_cattle:
                             wc.commit(); wc.close()
                             st.success(f"시험군 '{target_code}' 삭제 완료")
                             st.rerun()
-        
+                st.caption("기존 개체를 다른 시험군으로 옮기려면 '상태 변경 / 질병 기록' 탭의 '개체 위치 및 시험군 이동'을 이용하세요.")
+
         with col_reg2:
             st.subheader("개체 입식 등록")
             st.caption("개체를 한 마리씩 등록하거나, 엑셀 파일을 통해 일괄 등록할 수 있습니다.")
@@ -1363,7 +1444,7 @@ with tab_cattle:
                             # 버튼 넓이를 절반으로 줄이기 위해 컬럼 사용
                             btn_b1, btn_b2 = st.columns(2)
                             with btn_b1:
-                                do_bulk_upload = st.button("개체 일괄등록", type="primary", use_container_width=True)
+                                do_bulk_upload = st.button("개체 일괄등록", type="primary", width="stretch")
 
                             if do_bulk_upload:
                                 wc = db_connect(DB_FILE)
@@ -1539,7 +1620,7 @@ with tab_cattle:
                     # 버튼 넓이를 절반으로 줄이기 위해 컬럼 사용
                     btn_c1, btn_c2 = st.columns(2)
                     with btn_c1:
-                        submitted_cattle = st.form_submit_button("개체 입식 등록", type="primary", use_container_width=True)
+                        submitted_cattle = st.form_submit_button("개체 입식 등록", type="primary", width="stretch")
                         
                     if submitted_cattle:
                         if new_cattle_id:
@@ -1597,7 +1678,7 @@ with tab_cattle:
                         
                         btn_s1, btn_s2 = st.columns(2)
                         with btn_s1:
-                            submitted_status = st.form_submit_button("상태 변경", type="primary", use_container_width=True)
+                            submitted_status = st.form_submit_button("상태 변경", type="primary", width="stretch")
                             
                         if submitted_status:
                             target_id = cattle_opts[target_cattle_label]
@@ -1609,7 +1690,7 @@ with tab_cattle:
                     
                     st.markdown("---")
                     st.subheader("개체 위치(동/우방) 및 시험군 이동")
-                    st.caption("우방을 변경하면 해당 우방에 있는 개체들과 같은 시험군으로 자동 소속됩니다.")
+                    st.caption("우방을 변경하면 해당 우방에 있는 개체들과 같은 시험군으로 자동 소속됩니다. 새로 만든 시험군에 기존 개체를 편입할 때도 여기서 이동하세요.")
                     
                     groups_for_move = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master", conn)
                     move_group_opts = {r['test_name']: r['test_group_code'] for _, r in groups_for_move.iterrows()}
@@ -1627,7 +1708,7 @@ with tab_cattle:
                         
                         btn_m1, btn_m2 = st.columns(2)
                         with btn_m1:
-                            submitted_move = st.form_submit_button("위치 및 소속 변경", type="primary", use_container_width=True)
+                            submitted_move = st.form_submit_button("위치 및 소속 변경", type="primary", width="stretch")
                             
                         if submitted_move:
                             if not move_cattle_labels:
@@ -1683,7 +1764,7 @@ with tab_cattle:
                     dis_vet = st.text_input("수의사", placeholder="예: 김수의")
                     dis_rx = st.text_input("처방전번호")
                     
-                    submitted_dis = st.form_submit_button("질병 기록 등록", type="primary", use_container_width=True)
+                    submitted_dis = st.form_submit_button("질병 기록 등록", type="primary", width="stretch")
                     if submitted_dis:
                         wc = db_connect(DB_FILE)
                         wc.execute(
@@ -1705,7 +1786,7 @@ with tab_cattle:
             if df_disease.empty:
                 st.info("등록된 질병 기록이 없습니다.")
             else:
-                st.dataframe(df_disease, use_container_width=True, hide_index=True)
+                st.dataframe(df_disease, width="stretch", hide_index=True)
     
     with sub_tab3:
         # 상태별 카운트
@@ -1747,24 +1828,25 @@ with tab_cattle:
             if col in df_all_cattle.columns:
                 df_all_cattle[col] = df_all_cattle[col].apply(lambda x: f"{int(x):,}" if pd.notnull(x) and str(x).strip() != '' else "")
             
-        st.dataframe(df_all_cattle, use_container_width=True, hide_index=True)
+        st.dataframe(df_all_cattle, width="stretch", hide_index=True)
 
 with tab1:
     col_a, col_b = st.columns(2)
     with col_a:
         st.subheader("사육 개체 요약")
+        st.caption("&nbsp;", unsafe_allow_html=True)  # 오른쪽 캡션과 높이를 맞추기 위한 빈 여백
         df_cattle = pd.read_sql("""
             SELECT c.cattle_id as 개체번호, t.test_name as 시험군, c.status as 상태, c.initial_cost as 초기원가
             FROM cattle c
             JOIN testgroup_master t ON c.test_group_code = t.test_group_code
             ORDER BY c.status, c.cattle_id
         """, conn)
-        st.dataframe(df_cattle, use_container_width=True, hide_index=True)
+        st.dataframe(df_cattle, width="stretch", hide_index=True)
     with col_b:
         st.subheader("품목 및 재고 상태")
         st.caption("매입 시마다 이동평균단가가 자동으로 갱신됩니다.")
         df_item = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
-        st.dataframe(df_item, use_container_width=True, hide_index=True)
+        st.dataframe(df_item, width="stretch", hide_index=True)
 
 with tab0:
     col_left, col_right = st.columns(2)
@@ -1776,7 +1858,7 @@ with tab0:
             new_item_code = st.text_input("품목코드", placeholder="예: ITEM4")
             new_item_name = st.text_input("품목명", placeholder="예: TMR사료")
             new_item_category = st.selectbox("분류", ["사료", "조사료", "약품"])
-            submitted_item = st.form_submit_button("품목 등록", type="primary", use_container_width=True)
+            submitted_item = st.form_submit_button("품목 등록", type="primary", width="stretch")
             if submitted_item:
                 if new_item_code and new_item_name:
                     try:
@@ -1799,14 +1881,14 @@ with tab0:
         
         edited_item_df = st.data_editor(
             df_items_all,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             disabled=["품목코드", "현재재고", "이동평균단가"],
             num_rows="dynamic",
             key="item_master_editor"
         )
         
-        if st.button("품목 수정 사항 저장", type="secondary", use_container_width=True):
+        if st.button("품목 수정 사항 저장", type="secondary", width="stretch"):
             write_conn = db_connect(DB_FILE)
             current_codes = edited_item_df[~edited_item_df["삭제"]]['품목코드'].dropna().tolist()
             
@@ -1847,7 +1929,7 @@ with tab0:
                 with col_a2:
                     purchase_amount = st.number_input("총매입금액 (원)", min_value=0, step=10000)
                 
-                submitted_purchase = st.form_submit_button("매입 등록", type="primary", use_container_width=True)
+                submitted_purchase = st.form_submit_button("매입 등록", type="primary", width="stretch")
                 if submitted_purchase:
                     if purchase_qty > 0 and purchase_amount > 0:
                         selected_item_code = item_options[purchase_item_label]
@@ -1879,14 +1961,14 @@ with tab0:
         
         edited_purchase_df = st.data_editor(
             df_purchase,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             disabled=["매입ID", "품목명", "단가"],
             num_rows="dynamic",
             key="purchase_editor"
         )
         
-        if st.button("매입 수정 사항 저장", type="secondary", use_container_width=True):
+        if st.button("매입 수정 사항 저장", type="secondary", width="stretch"):
             write_conn = db_connect(DB_FILE)
             current_ids = edited_purchase_df[~edited_purchase_df["삭제"]]['매입ID'].dropna().tolist()
             
@@ -1945,7 +2027,7 @@ with tab2:
                 usage_item_label = st.selectbox("사용 품목", list(item_options2.keys()))
                 usage_qty = st.number_input("총 사용량 (kg/개)", min_value=0.01, step=1.0, format="%.2f")
                 
-                submitted_usage = st.form_submit_button("사용량 등록", type="primary", use_container_width=True)
+                submitted_usage = st.form_submit_button("사용량 등록", type="primary", width="stretch")
                 if submitted_usage:
                     if usage_qty > 0 and usage_month:
                         sel_group = group_options[usage_group_label]
@@ -1978,7 +2060,7 @@ with tab2:
             JOIN item_master i ON u.item_code = i.item_code
             ORDER BY u.settlement_month DESC, t.test_name
         """, conn)
-        st.dataframe(df_usage, use_container_width=True, hide_index=True)
+        st.dataframe(df_usage, width="stretch", hide_index=True)
     
     with col_d:
         st.markdown("##### ⚡ 농장 고정비 등록")
@@ -1988,7 +2070,7 @@ with tab2:
             fc_item = st.selectbox("지출 항목", ["인건비", "전기세", "시험사양수고비", "CCTV사용료", "우수등급장려금", "기타"])
             fc_amount = st.number_input("총 청구금액 (원)", min_value=0, step=10000)
             
-            submitted_fc = st.form_submit_button("고정비 등록", type="primary", use_container_width=True)
+            submitted_fc = st.form_submit_button("고정비 등록", type="primary", width="stretch")
             if submitted_fc:
                 if fc_amount > 0 and fc_month:
                     write_conn = db_connect(DB_FILE)
@@ -2015,14 +2097,14 @@ with tab2:
         
         edited_fc_df = st.data_editor(
             df_fixed,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             disabled=["ID"],
             num_rows="dynamic",
             key="fixedcost_editor"
         )
         
-        if st.button("고정비 수정 사항 저장", type="secondary", use_container_width=True):
+        if st.button("고정비 수정 사항 저장", type="secondary", width="stretch"):
             write_conn = db_connect(DB_FILE)
             current_ids = edited_fc_df[~edited_fc_df["삭제"]]['ID'].dropna().tolist()
             
@@ -2049,11 +2131,11 @@ with tab2:
             st.success("고정비 내역이 업데이트 되었습니다.")
             st.rerun()
 
-with tab3:
-    st.subheader("버튼 클릭으로 정산 실행하기")
-    st.markdown("아래 버튼을 누르면 파이썬 스크립트가 **💰 비용 청구 내역** 탭에 등록된 변동비·고정비를 분석하여, 이번 달 사육 이력이 있는 각 소에 **실제 사육일수에 비례해(일할계산)** 변동비와 고정비를 배분합니다.")
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    st.markdown("### 🚀 월말 정산(일할계산) 실행")
+    st.markdown("아래 버튼을 누르면 위에서 등록한 변동비·고정비를 분석하여, 이번 달 사육 이력이 있는 각 개체에 **실제 사육일수에 비례해(일할계산)** 변동비와 고정비를 배분합니다.")
     
-    target_month = st.text_input("정산 대상 연월 (예: 2023-10)", value="2023-10")
+    target_month = st.text_input("정산 대상 연월 (예: 2023-10)", value="2023-10", key="calc_target_month")
     
     # 정산 전 요약 미리보기
     preview_usage = pd.read_sql("""
@@ -2069,7 +2151,7 @@ with tab3:
         st.markdown(f"**[{target_month}] 정산 대상 비용 요약:**")
         col_p1, col_p2 = st.columns(2)
         with col_p1:
-            st.dataframe(preview_usage, use_container_width=True, hide_index=True)
+            st.dataframe(preview_usage, width="stretch", hide_index=True)
         with col_p2:
             fixed_val = preview_fixed.iloc[0]['고정비_합계'] if pd.notna(preview_fixed.iloc[0]['고정비_합계']) else 0
             st.metric("고정비 합계", f"{fixed_val:,.0f} 원")
@@ -2089,7 +2171,7 @@ with tab3:
         if df_log.empty:
             st.info("해당 연월에 아직 정산된 내역이 없습니다.")
         else:
-            st.dataframe(df_log, use_container_width=True, hide_index=True)
+            st.dataframe(df_log, width="stretch", hide_index=True)
     except:
         st.info("아직 정산된 내역이 없습니다.")
 
@@ -2119,9 +2201,13 @@ with tab_report:
                 report_html.encode("utf-8"),
                 file_name=f"결산리포트_{selected_farm}_{report_month}.html",
                 mime="text/html",
-                use_container_width=True,
+                width="stretch",
             )
             st.markdown("###### 미리보기")
             st.iframe(report_html, height=900)
+
+with tab_slaughter:
+    st.subheader("🥩 도축 성적 관리")
+    st.info("이 탭은 추후 출하(도축)된 개체들의 도축 성적(등급, 도체중, 등심단면적, 근내지방도 등)을 기록하고 확인하기 위한 메뉴입니다.\n\n현재 준비중입니다.")
 
 conn.close()
