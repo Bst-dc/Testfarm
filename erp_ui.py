@@ -363,13 +363,13 @@ def distribute_monthly_costs(db_file, settlement_month):
     # 그 개체가 실제로 소비한 사료·고정비 몫이 남은 개체에게 그대로 전가된다.
     # 그래서 상태와 무관하게 "이번 정산월에 하루라도 사육 이력이 겹치는 개체"를 모두 포함시키고,
     # 실제 겹치는 일수는 아래 calc_days() 에서 admission_date/closure_date 로 정확히 계산한다.
-    query = f"""
+    query = """
         SELECT cattle_id, test_group_code, admission_date, closure_date
         FROM cattle
-        WHERE (admission_date IS NULL OR strftime('%Y-%m', admission_date) <= '{settlement_month}')
-        AND (closure_date IS NULL OR strftime('%Y-%m', closure_date) >= '{settlement_month}')
+        WHERE (admission_date IS NULL OR strftime('%Y-%m', admission_date) <= ?)
+        AND (closure_date IS NULL OR strftime('%Y-%m', closure_date) >= ?)
     """
-    cattle_df = pd.read_sql(query, conn)
+    cattle_df = pd.read_sql(query, conn, params=(settlement_month, settlement_month))
 
     if cattle_df.empty:
         conn.close()
@@ -405,10 +405,10 @@ def distribute_monthly_costs(db_file, settlement_month):
     total_farm_days = cattle_df['rearing_days'].sum()
     group_days = cattle_df.groupby('test_group_code')['rearing_days'].sum().to_dict()
 
-    fixed_cost_df = pd.read_sql(f"SELECT SUM(total_billed_amount) as total_fixed_cost FROM monthly_fixedcost WHERE settlement_month = '{settlement_month}'", conn)
+    fixed_cost_df = pd.read_sql("SELECT SUM(total_billed_amount) as total_fixed_cost FROM monthly_fixedcost WHERE settlement_month = ?", conn, params=(settlement_month,))
     total_fixed_cost = float(fixed_cost_df['total_fixed_cost'].iloc[0]) if pd.notna(fixed_cost_df['total_fixed_cost'].iloc[0]) else 0.0
 
-    usage_df = pd.read_sql(f"SELECT test_group_code, SUM(calculated_amount) as total_variable_cost FROM monthly_usage WHERE settlement_month = '{settlement_month}' GROUP BY test_group_code", conn)
+    usage_df = pd.read_sql("SELECT test_group_code, SUM(calculated_amount) as total_variable_cost FROM monthly_usage WHERE settlement_month = ? GROUP BY test_group_code", conn, params=(settlement_month,))
     group_vcost = dict(zip(usage_df['test_group_code'], usage_df['total_variable_cost']))
 
     log_data = []
@@ -702,7 +702,7 @@ with tab_cattle:
                         target_code = group_opts[edit_target]
                         wc = db_connect(DB_FILE)
                         # 개체가 있는지 확인하여 무결성 오류 방지
-                        cattle_cnt = pd.read_sql(f"SELECT COUNT(*) as cnt FROM cattle WHERE test_group_code='{target_code}'", wc).iloc[0]['cnt']
+                        cattle_cnt = pd.read_sql("SELECT COUNT(*) as cnt FROM cattle WHERE test_group_code=?", wc, params=(target_code,)).iloc[0]['cnt']
                         if cattle_cnt > 0:
                             st.error(f"이 시험군에 등록된 개체가 {cattle_cnt}마리 있어 삭제할 수 없습니다. 개체를 먼저 삭제/이동하세요.")
                             wc.close()
@@ -1301,7 +1301,7 @@ with tab0:
             # 전체 품목 재고 및 단가 재계산
             items = pd.read_sql("SELECT item_code FROM item_master", write_conn)
             for item in items['item_code']:
-                purchases = pd.read_sql(f"SELECT quantity, total_amount FROM purchase WHERE item_code='{item}' ORDER BY purchase_date ASC", write_conn)
+                purchases = pd.read_sql("SELECT quantity, total_amount FROM purchase WHERE item_code=? ORDER BY purchase_date ASC", write_conn, params=(item,))
                 stock = float(purchases['quantity'].sum()) if not purchases.empty else 0.0
                 total_val = float(purchases['total_amount'].sum()) if not purchases.empty else 0.0
                 avg_price = round(total_val / stock, 2) if stock > 0 else 0
@@ -1443,19 +1443,19 @@ with tab2:
 
 with tab3:
     st.subheader("버튼 클릭으로 정산 실행하기")
-    st.markdown("아래 버튼을 누르면 파이썬 스크립트가 **💰 비용 청구 내역** 탭에 등록된 변동비·고정비를 분석하여, 사육 중인 각 소마다 **변동비와 고정비를 1/n로 나누어** 할당합니다.")
+    st.markdown("아래 버튼을 누르면 파이썬 스크립트가 **💰 비용 청구 내역** 탭에 등록된 변동비·고정비를 분석하여, 이번 달 사육 이력이 있는 각 소에 **실제 사육일수에 비례해(일할계산)** 변동비와 고정비를 배분합니다.")
     
     target_month = st.text_input("정산 대상 연월 (예: 2023-10)", value="2023-10")
     
     # 정산 전 요약 미리보기
-    preview_usage = pd.read_sql(f"""
+    preview_usage = pd.read_sql("""
         SELECT t.test_name as 시험군, SUM(u.calculated_amount) as 변동비_합계
         FROM monthly_usage u
         JOIN testgroup_master t ON u.test_group_code = t.test_group_code
-        WHERE u.settlement_month = '{target_month}'
+        WHERE u.settlement_month = ?
         GROUP BY t.test_name
-    """, conn)
-    preview_fixed = pd.read_sql(f"SELECT SUM(total_billed_amount) as 고정비_합계 FROM monthly_fixedcost WHERE settlement_month = '{target_month}'", conn)
+    """, conn, params=(target_month,))
+    preview_fixed = pd.read_sql("SELECT SUM(total_billed_amount) as 고정비_합계 FROM monthly_fixedcost WHERE settlement_month = ?", conn, params=(target_month,))
     
     if not preview_usage.empty or (not preview_fixed.empty and pd.notna(preview_fixed.iloc[0]['고정비_합계'])):
         st.markdown(f"**[{target_month}] 정산 대상 비용 요약:**")
@@ -1466,7 +1466,7 @@ with tab3:
             fixed_val = preview_fixed.iloc[0]['고정비_합계'] if pd.notna(preview_fixed.iloc[0]['고정비_합계']) else 0
             st.metric("고정비 합계", f"{fixed_val:,.0f} 원")
     
-    if st.button("🚀 정산 1/n 분배 및 누적원가 반영", type="primary"):
+    if st.button("🚀 정산 실행(일할계산) 및 누적원가 반영", type="primary"):
         success, msg = distribute_monthly_costs(DB_FILE, target_month)
         if success:
             st.success(msg)
@@ -1477,7 +1477,7 @@ with tab3:
     st.markdown("---")
     st.subheader(f"[{target_month}] 개체별 원가 적재 결과 (Cattle_Cost_Log)")
     try:
-        df_log = pd.read_sql(f"SELECT cattle_id, settlement_month, allocated_variable_cost as 변동비_할당, allocated_fixed_cost as 고정비_할당, (allocated_variable_cost + allocated_fixed_cost) as 당월_추가원가 FROM cattle_cost_log WHERE settlement_month='{target_month}'", conn)
+        df_log = pd.read_sql("SELECT cattle_id, settlement_month, allocated_variable_cost as 변동비_할당, allocated_fixed_cost as 고정비_할당, (allocated_variable_cost + allocated_fixed_cost) as 당월_추가원가 FROM cattle_cost_log WHERE settlement_month=?", conn, params=(target_month,))
         if df_log.empty:
             st.info("해당 연월에 아직 정산된 내역이 없습니다.")
         else:
