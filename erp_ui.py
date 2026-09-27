@@ -169,6 +169,16 @@ CREATE TABLE IF NOT EXISTS cattle_cost_log (
     UNIQUE (cattle_id, settlement_month)
 );
 
+CREATE TABLE IF NOT EXISTS cattle_item_usage_log (
+    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cattle_id TEXT REFERENCES cattle(cattle_id),
+    settlement_month TEXT NOT NULL,
+    item_code TEXT REFERENCES item_master(item_code),
+    allocated_usage NUMERIC(10, 2) NOT NULL,
+    allocated_amount NUMERIC(12, 2) NOT NULL,
+    UNIQUE (cattle_id, settlement_month, item_code)
+);
+
 CREATE TRIGGER IF NOT EXISTS trg_after_insert_purchase
 AFTER INSERT ON purchase
 FOR EACH ROW
@@ -412,7 +422,10 @@ def distribute_monthly_costs(db_file, settlement_month):
     usage_df = pd.read_sql("SELECT test_group_code, SUM(calculated_amount) as total_variable_cost FROM monthly_usage WHERE settlement_month = ? GROUP BY test_group_code", conn, params=(settlement_month,))
     group_vcost = dict(zip(usage_df['test_group_code'], usage_df['total_variable_cost']))
 
+    item_usage_df = pd.read_sql("SELECT test_group_code, item_code, SUM(total_usage) as total_qty, SUM(calculated_amount) as total_amt FROM monthly_usage WHERE settlement_month = ? GROUP BY test_group_code, item_code", conn, params=(settlement_month,))
+
     log_data = []
+    item_log_data = []
     for _, row in cattle_df.iterrows():
         t_group = row['test_group_code']
         days = row['rearing_days']
@@ -428,11 +441,31 @@ def distribute_monthly_costs(db_file, settlement_month):
             'allocated_variable_cost': round(v_cost, 2),
             'allocated_fixed_cost': round(f_cost, 2)
         })
+
+        group_items = item_usage_df[item_usage_df['test_group_code'] == t_group]
+        for _, itm in group_items.iterrows():
+            item_code = itm['item_code']
+            item_qty = float(itm['total_qty'])
+            item_amt = float(itm['total_amt'])
+            
+            alloc_qty = (item_qty * days / g_days) if g_days > 0 else 0
+            alloc_amt = (item_amt * days / g_days) if g_days > 0 else 0
+            
+            item_log_data.append({
+                'cattle_id': row['cattle_id'],
+                'settlement_month': settlement_month,
+                'item_code': item_code,
+                'allocated_usage': round(alloc_qty, 2),
+                'allocated_amount': round(alloc_amt, 2)
+            })
         
     log_df = pd.DataFrame(log_data)
+    item_log_df = pd.DataFrame(item_log_data)
     
     try:
         log_df.to_sql('cattle_cost_log', conn, if_exists='append', index=False, method='multi')
+        if not item_log_df.empty:
+            item_log_df.to_sql('cattle_item_usage_log', conn, if_exists='append', index=False, method='multi')
         conn.close()
         return True, f"'{settlement_month}' 개체별 일할계산(사육일수 비례) 정산이 완료되었습니다. (총 {len(log_df)}마리 적용)"
     except Exception as e:
