@@ -381,14 +381,18 @@ def distribute_monthly_costs(db_file, settlement_month):
     import calendar
     from datetime import datetime
     conn = db_connect(db_file)
+    # status = '사육' 로만 걸러내면 이번 정산월 도중에 출하/폐사한 개체가 통째로 빠지고,
+    # 그 개체가 실제로 소비한 사료·고정비 몫이 남은 개체에게 그대로 전가된다.
+    # 그래서 상태와 무관하게 "이번 정산월에 하루라도 사육 이력이 겹치는 개체"를 모두 포함시키고,
+    # 실제 겹치는 일수는 아래 calc_days() 에서 admission_date/closure_date 로 정확히 계산한다.
     query = f"""
         SELECT cattle_id, test_group_code, admission_date, closure_date
-        FROM cattle 
-        WHERE status = '사육' 
-        AND (admission_date IS NULL OR strftime('%Y-%m', admission_date) <= '{settlement_month}')
+        FROM cattle
+        WHERE (admission_date IS NULL OR strftime('%Y-%m', admission_date) <= '{settlement_month}')
+        AND (closure_date IS NULL OR strftime('%Y-%m', closure_date) >= '{settlement_month}')
     """
     cattle_df = pd.read_sql(query, conn)
-    
+
     if cattle_df.empty:
         conn.close()
         return False, "사육 중이거나 정산월에 포함되는 개체가 없습니다."
@@ -397,12 +401,19 @@ def distribute_monthly_costs(db_file, settlement_month):
     last_day = calendar.monthrange(year, month)[1]
     month_start = datetime(year, month, 1)
     month_end = datetime(year, month, last_day)
-    
+
     def calc_days(row):
         adm = row['admission_date']
         adm_d = datetime.strptime(str(adm)[:10], '%Y-%m-%d') if pd.notna(adm) and str(adm).strip() else month_start
         start = max(month_start, adm_d)
+
+        # 이번 달 중 출하/폐사(closure_date)했다면 그 날짜까지만 사육일수로 센다.
         end = month_end
+        clo = row['closure_date']
+        if pd.notna(clo) and str(clo).strip():
+            clo_d = datetime.strptime(str(clo)[:10], '%Y-%m-%d')
+            end = min(month_end, clo_d)
+
         if start > end: return 0
         return (end - start).days + 1
 
