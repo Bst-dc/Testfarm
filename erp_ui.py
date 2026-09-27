@@ -348,32 +348,10 @@ def init_db(farm_name):
             (c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10], c[11], c[12], c[13], c[14], c[15], total_cost, c[16], c[17], c[18])
         )
     
-    # 품목 등록 (사료, 조사료, 약품)
-    conn.execute("INSERT INTO item_master VALUES ('ITEM1', '배합사료A', '사료', 0, 0)")
-    conn.execute("INSERT INTO item_master VALUES ('ITEM2', '볏짚', '조사료', 0, 0)")
-    conn.execute("INSERT INTO item_master VALUES ('ITEM3', '구충제', '약품', 0, 0)")
-    
-    # 매입 데이터 (사료)
-    conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, total_amount) VALUES ('2023-10-05', 'ITEM1', 1000, 500000)")
-    conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, total_amount) VALUES ('2023-10-15', 'ITEM1', 1000, 600000)")
-    # 매입 데이터 (조사료)
-    conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, total_amount) VALUES ('2023-10-10', 'ITEM2', 500, 150000)")
-    # 매입 데이터 (약품)
-    conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, total_amount) VALUES ('2023-10-12', 'ITEM3', 50, 250000)")
-    
-    # 월간 사용 데이터 (FARM_CONFIG 에 시험군이 등록된 경우에만 예시 데이터를 넣는다)
-    groups = cfg["test_groups"]
-    for idx, usage in ((0, (2000, 500, 1000000)), (1, (3000, 500, 1500000))):
-        if idx < len(groups):
-            conn.execute(
-                "INSERT INTO monthly_usage (settlement_month, test_group_code, item_code, total_usage, applied_price, calculated_amount) VALUES ('2023-10', ?, 'ITEM1', ?, ?, ?)",
-                (groups[idx][0],) + usage,
-            )
-    
-    # 고정비
-    conn.execute("INSERT INTO monthly_fixedcost (settlement_month, expense_item, total_billed_amount) VALUES ('2023-10', '전기세', 200000)")
-    conn.execute("INSERT INTO monthly_fixedcost (settlement_month, expense_item, total_billed_amount) VALUES ('2023-10', '인건비', 300000)")
-    
+    # 품목/매입/사용량/고정비는 예전에 화면 확인용으로 넣어 둔 가짜 데모 데이터였다.
+    # 리셋 버튼을 누를 때마다 이 더미가 실데이터에 다시 섞여 들어가는 문제가 있어 제거했다.
+    # 리셋 후에는 빈 표 상태로 시작하고, 각 탭의 등록 폼으로 실제 값을 입력한다.
+
     conn.commit()
     conn.close()
 
