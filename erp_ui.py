@@ -228,6 +228,24 @@ def close_stale_connections():
                 pass
 
 
+def migrate_schema(db_file):
+    """이미 만들어져 있는 DB에 나중에 추가된 표(예: cattle_item_usage_log)를 채워 넣는다.
+
+    SQLITE_DDL 은 전부 'CREATE TABLE/TRIGGER IF NOT EXISTS' 라서 몇 번을 다시
+    실행해도 안전하다. 이걸 안 하면, 기존 DB에서 새 기능을 처음 쓸 때
+    pandas.to_sql() 이 PRIMARY KEY/UNIQUE 제약 없이 즉석에서 표를 만들어버려
+    새로 만든 DB와 스키마가 미묘하게 달라진다.
+    """
+    if not os.path.exists(db_file):
+        return
+    conn = sqlite3.connect(db_file, timeout=30)
+    try:
+        conn.executescript(SQLITE_DDL)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ========== 백업 ==========
 def backup_db(db_file, reason="auto", dest_dir=None):
     """SQLite 스냅샷 백업. 단순 파일 복사와 달리 쓰기 도중에도 안전하다.
@@ -708,6 +726,10 @@ farm_color = farm_cfg["color"]
 # DB 자동 생성
 if not os.path.exists(DB_FILE):
     init_db(selected_farm)
+
+# 기존 DB에 나중에 추가된 표가 빠져 있으면 채워 넣는다 (신규 생성 직후에도 실행되지만
+# 전부 IF NOT EXISTS 라서 안전하다).
+migrate_schema(DB_FILE)
 
 # 그날 첫 접속이면 자동 백업
 daily_backup(DB_FILE)
