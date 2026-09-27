@@ -522,6 +522,17 @@ def generate_settlement_report(db_file, farm_name, settlement_month):
             conn,
             params=(settlement_month,),
         )
+        
+        item_log_df = pd.read_sql(
+            """
+            SELECT u.cattle_id, u.item_code, m.item_name, u.allocated_usage, u.allocated_amount
+            FROM cattle_item_usage_log u
+            LEFT JOIN item_master m ON u.item_code = m.item_code
+            WHERE u.settlement_month = ?
+            """,
+            conn,
+            params=(settlement_month,)
+        )
     finally:
         conn.close()
 
@@ -538,6 +549,16 @@ def generate_settlement_report(db_file, farm_name, settlement_month):
     def esc(value):
         return html.escape(str(value)) if pd.notna(value) else ""
 
+    item_usage_dict = {}
+    for cattle_id, group in item_log_df.groupby('cattle_id'):
+        items_html = []
+        for _, row in group.iterrows():
+            item_name = row['item_name'] if pd.notna(row['item_name']) else row['item_code']
+            qty = row['allocated_usage']
+            amt = row['allocated_amount']
+            items_html.append(f"<span class='inline-block bg-slate-100 text-slate-600 rounded px-2 py-1 text-xs mr-1 mb-1'>{esc(item_name)}: {qty:,.2f}kg ({amt:,.0f}원)</span>")
+        item_usage_dict[cattle_id] = "".join(items_html)
+
     row_html_parts = []
     for _, row in log_df.iterrows():
         gcode = row['test_group_code']
@@ -545,15 +566,21 @@ def generate_settlement_report(db_file, farm_name, settlement_month):
         bg, fg = color_map.get(gcode, ("bg-slate-100", "text-slate-700"))
         v_cost = float(row['allocated_variable_cost'] or 0)
         f_cost = float(row['allocated_fixed_cost'] or 0)
+        
+        items_str = item_usage_dict.get(row['cattle_id'], "<span class='text-xs text-slate-400'>내역 없음</span>")
+
         row_html_parts.append(f"""
-        <tr class="hover:bg-slate-50 transition-colors">
-            <td class="py-4 px-5 text-sm font-bold text-slate-700">{esc(row['cattle_id'])}</td>
-            <td class="py-4 px-5 text-sm text-center">
+        <tr class="hover:bg-slate-50 transition-colors border-b border-slate-100">
+            <td class="py-4 px-5 text-sm font-bold text-slate-700 align-top">{esc(row['cattle_id'])}</td>
+            <td class="py-4 px-5 text-sm text-center align-top">
                 <span class="px-3 py-1 rounded-full text-xs font-bold {bg} {fg}">{esc(gname)}</span>
             </td>
-            <td class="py-4 px-5 text-sm text-right font-medium text-slate-600">{v_cost:,.0f}</td>
-            <td class="py-4 px-5 text-sm text-right font-medium text-slate-600">{f_cost:,.0f}</td>
-            <td class="py-4 px-5 text-sm text-right font-bold text-indigo-600 bg-indigo-50/30">{v_cost + f_cost:,.0f}</td>
+            <td class="py-4 px-5 align-top">
+                <div class="text-sm text-right font-medium text-slate-600 mb-2">{v_cost:,.0f} 원</div>
+                <div class="text-right flex flex-wrap justify-end gap-1">{items_str}</div>
+            </td>
+            <td class="py-4 px-5 text-sm text-right font-medium text-slate-600 align-top">{f_cost:,.0f} 원</td>
+            <td class="py-4 px-5 text-sm text-right font-bold text-indigo-600 bg-indigo-50/30 align-top">{v_cost + f_cost:,.0f} 원</td>
         </tr>""")
 
     generated_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -619,7 +646,7 @@ def generate_settlement_report(db_file, farm_name, settlement_month):
                         <tr>
                             <th class="py-4 px-5 text-left font-semibold text-sm">개체번호</th>
                             <th class="py-4 px-5 text-center font-semibold text-sm">시험군</th>
-                            <th class="py-4 px-5 text-right font-semibold text-sm">배부 변동비 (원)</th>
+                            <th class="py-4 px-5 text-right font-semibold text-sm">배부 변동비 (금액 및 품목상세)</th>
                             <th class="py-4 px-5 text-right font-semibold text-sm">배부 고정비 (원)</th>
                             <th class="py-4 px-5 text-right font-semibold text-sm text-indigo-300">당월 총원가 (원)</th>
                         </tr>
