@@ -34,48 +34,233 @@ st.set_page_config(page_title="한우 시험농장 관리 시스템", layout="wi
 st.markdown(
     """
     <style>
-    /* 탭 메뉴(헤더) 글씨 크기 강제 확대, 내부 버튼에는 영향 가지 않게 제한 */
-    div[data-testid="stTabs"] [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
-        font-size: 28px !important;
-        font-weight: bold !important;
+    /* 웹 폰트 적용 (Pretendard) */
+    @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.8/dist/web/static/pretendard.css");
+    html, body, [class*="st-"] {
+        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, 'Helvetica Neue', 'Segoe UI', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif !important;
     }
-    div[data-testid="stTabs"] [data-baseweb="tab-list"] button * {
-        font-size: 28px !important;
-        font-weight: bold !important;
+    /* 위 폰트 강제 적용이 Streamlit 내장 아이콘(사이드바 접기 화살표, expander 화살표 등)의
+       전용 아이콘 폰트까지 덮어써서 "keyboard_double_arrow_left" 같은 글자가 그대로 보이는
+       문제를 막기 위해 아이콘 요소는 원래 아이콘 폰트로 되돌린다. */
+    [data-testid="stIconMaterial"] {
+        font-family: "Material Symbols Rounded" !important;
     }
-    div[data-testid="stTabs"] [data-baseweb="tab-list"] button {
-        font-size: 28px !important;
-        font-weight: bold !important;
-        padding-top: 1rem !important;
-        padding-bottom: 1rem !important;
+
+    /* 전체 배경 - 세이지그린 → 더스티블루 대각선 그라데이션 (한우 스마트 컨설팅 스타일) */
+    .stApp {
+        background:
+            radial-gradient(1200px 700px at 0% 0%, rgba(176, 205, 183, 0.9) 0%, rgba(176, 205, 183, 0) 60%),
+            radial-gradient(1000px 800px at 100% 100%, rgba(171, 196, 216, 0.9) 0%, rgba(171, 196, 216, 0) 60%),
+            linear-gradient(135deg, #C6D8C3 0%, #C0D2DF 100%);
+        background-attachment: fixed;
+        color: #2B2B28;
+    }
+
+    /* 사이드바 배경 - 같은 계열의 반투명 그라데이션 */
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, rgba(166, 198, 174, 0.85) 0%, rgba(160, 186, 210, 0.85) 100%) !important;
+        border-right: 1px solid rgba(255, 255, 255, 0.4);
+    }
+    section[data-testid="stSidebar"] * {
+        color: #2B2B28;
+    }
+
+    /* 메트릭 카드 (핵심 지표) 스타일링 - 민트 카드 + 웜톤 그림자 */
+    div[data-testid="metric-container"], div[data-testid="stMetric"] {
+        background-color: #E6EFE3;
+        border: 1px solid #CFDCCB;
+        padding: 20px 24px;
+        border-radius: 14px;
+        box-shadow: 0 4px 6px -1px rgba(60, 55, 40, 0.05), 0 2px 4px -1px rgba(60, 55, 40, 0.03);
+        border-left: 6px solid #5E7F66; /* 세이지그린 포인트 */
+        transition: transform 0.2s ease;
+    }
+    div[data-testid="metric-container"]:hover, div[data-testid="stMetric"]:hover {
+        transform: translateY(-2px);
+    }
+    div[data-testid="metric-container"] > div, div[data-testid="stMetric"] > div {
+        color: #2B2B28; /* 제목 색상 */
+    }
+    div[data-testid="metric-container"] div[data-testid="stMetricValue"],
+    div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
+        font-weight: 800;
+        font-size: 2.2rem;
+        color: #1F2A22;
+    }
+
+    /* 탭 메뉴(헤더)를 최신 웹앱 버튼형(Pill) 스타일로 변경
+       (예전 BaseWeb 마크업 기준 [data-baseweb="tab"] 셀렉터는 현재 Streamlit 버전에서
+        div[data-testid="stTab"] 로 바뀌어 더 이상 매치되지 않았음 — 실제 DOM 기준으로 수정) */
+    div[data-testid="stTabs"] div[role="tablist"] {
+        gap: 12px;
+        border-bottom: none;
+        padding-bottom: 10px;
+    }
+    div[data-testid="stTab"] {
+        background-color: rgba(255, 255, 255, 0.6) !important;
+        border: 1px solid rgba(255, 255, 255, 0.8) !important;
+        border-radius: 30px !important;
+        padding: 12px 24px !important;
+        box-shadow: 0 2px 4px rgba(60, 55, 40, 0.04);
+        transition: all 0.2s ease;
+    }
+    div[data-testid="stTab"]:hover {
+        background-color: rgba(255, 255, 255, 0.85) !important;
+        border-color: rgba(255, 255, 255, 1) !important;
+    }
+    div[data-testid="stTab"][aria-selected="true"] {
+        background: linear-gradient(135deg, #5E7F66 0%, #4A6F8A 100%) !important;
+        border-color: transparent !important;
+        box-shadow: 0 4px 10px rgba(74, 111, 138, 0.3);
+    }
+    div[data-testid="stTab"][aria-selected="true"] * {
+        color: #FFFFFF !important;
+    }
+    div[data-testid="stTab"] [data-testid="stMarkdownContainer"] p {
+        font-size: 20px !important;
+        font-weight: 700 !important;
+        margin: 0;
+    }
+
+    /* 사이드바 라디오 버튼(농장 선택)을 크고 예쁜 글래스 카드로 변경
+       (Streamlit이 라디오를 React Aria 기반으로 바꾸면서 label이 radiogroup의 직계 자식이
+        아니게 되었고, 선택 상태도 data-checked/aria-checked가 아니라 label 자체의
+        data-selected="true" 로 표시됨 — 실제 DOM 기준으로 셀렉터를 다시 작성) */
+    section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"] {
+        padding: 16px 20px !important;
+        background-color: rgba(255, 255, 255, 0.55) !important;
+        border: 2px solid rgba(255, 255, 255, 0.7) !important;
+        border-radius: 12px !important;
+        margin-bottom: 12px !important;
+        cursor: pointer !important;
+        transition: all 0.2s ease !important;
+        box-shadow: 0 1px 3px rgba(60, 55, 40, 0.05) !important;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"]:hover {
+        border-color: rgba(255, 255, 255, 1) !important;
+        background-color: rgba(255, 255, 255, 0.75) !important;
+        transform: translateY(-2px) !important;
+        box-shadow: 0 4px 6px rgba(60, 55, 40, 0.1) !important;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"][data-selected="true"] {
+        background: linear-gradient(135deg, #5E7F66 0%, #4A6F8A 100%) !important;
+        border-color: transparent !important;
+        box-shadow: 0 4px 10px rgba(74, 111, 138, 0.3) !important;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"][data-selected="true"] p {
+        color: #FFFFFF !important;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"] p {
+        font-size: 22px !important;
+        font-weight: 800 !important;
+        color: #2B2B28 !important;
+        margin: 0 !important;
+    }
+
+    /* 라디오 버튼의 동그라미 숨기기 (텍스트만 돋보이게) */
+    section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"] > div > div:first-child {
+        display: none !important;
+    }
+
+    /* 사이드바 라디오 버튼 제목(위젯 라벨) 크기 키우기 */
+    section[data-testid="stSidebar"] div[data-testid="stWidgetLabel"] p {
+        font-size: 26px !important;
+        font-weight: 900 !important;
+        color: #1F2A22 !important;
+        padding-bottom: 10px !important;
+    }
+
+    /* 표(Dataframe) 디자인 깔끔하게 */
+    div[data-testid="stDataFrame"] {
+        border: 1px solid #CFDCCB;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 2px 4px rgba(60, 55, 40, 0.03);
+    }
+
+    /* 버튼 - 세이지그린 → 스틸블루 그라데이션
+       (앱의 등록/수정/삭제 버튼은 대부분 st.form_submit_button 이라 stFormSubmitButton
+        래퍼를 쓰는데, 기존 셀렉터에 빠져 있어서 대부분의 버튼이 기본 빨간색으로 남아 있었음) */
+    .stButton > button, .stDownloadButton > button,
+    div[data-testid="stFormSubmitButton"] > button {
+        border-radius: 10px !important;
+        border: none !important;
+        background: linear-gradient(135deg, #5E7F66 0%, #4A6F8A 100%) !important;
+        color: #FFFFFF !important;
+        font-weight: 700 !important;
+        box-shadow: 0 2px 6px rgba(74, 111, 138, 0.25);
+        transition: transform 0.15s ease;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover,
+    div[data-testid="stFormSubmitButton"] > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 10px rgba(74, 111, 138, 0.3);
+    }
+
+    /* 입력창/선택창 - 반투명 글래스 톤
+       (셀렉트박스/멀티셀렉트도 BaseWeb에서 React Aria로 바뀌어 data-baseweb="select"가
+        더 이상 없음 — 실제 래퍼는 stSelectbox/stMultiSelect 안의 role="group" 요소) */
+    div[data-testid="stSelectbox"] div[role="group"],
+    div[data-testid="stMultiSelect"] div[role="group"],
+    .stTextInput input, .stNumberInput input, .stDateInput input {
+        background-color: rgba(255, 255, 255, 0.75) !important;
+        border-color: #CFDCCB !important;
+        border-radius: 10px !important;
+    }
+
+    /* expander도 카드 톤으로 통일 */
+    div[data-testid="stExpander"] {
+        background-color: rgba(255, 255, 255, 0.55);
+        border: 1px solid rgba(255, 255, 255, 0.7);
+        border-radius: 12px;
     }
     </style>
     """,
     unsafe_allow_html=True
 )
+import json
+
 # ========== 농장 설정 ==========
-FARM_CONFIG = {
-    "구미선산농장": {
-        "db_file": os.path.join(DB_DIR, "erp_sunsan.db"),
-        "color": "#4F46E5",  # indigo
-        "test_groups": [
-            # 예: ("SS-G1", "대조군", "2023-10-01"),
-        ],
-        "cattle": [
-            # 비어 있음
-        ],
-    },
-    "구미고아농장": {
-        "db_file": os.path.join(DB_DIR, "erp_goa.db"),
-        "color": "#059669",  # emerald
-        "test_groups": [
-            # 예: ("GA-G1", "대조군", "2023-10-01"),
-        ],
-        "cattle": [
-            # 비어 있음
-        ],
-    },
-}
+FARMS_JSON_PATH = os.path.join(DB_DIR, "farms.json")
+
+def load_farms():
+    data = None
+    if os.path.exists(FARMS_JSON_PATH):
+        try:
+            with open(FARMS_JSON_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            pass
+            
+    if not data:
+        data = {
+            "구미선산농장": {
+                "db_filename": "erp_sunsan.db",
+                "color": "#4F46E5",
+            },
+            "구미고아농장": {
+                "db_filename": "erp_goa.db",
+                "color": "#059669",
+            }
+        }
+        with open(FARMS_JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            
+    for k, v in data.items():
+        v["db_file"] = os.path.join(DB_DIR, v.get("db_filename", f"erp_{k}.db"))
+    return data
+
+def save_farms(farms_dict):
+    to_save = {}
+    for k, v in farms_dict.items():
+        to_save[k] = {
+            "db_filename": v.get("db_filename", f"erp_{k}.db"),
+            "color": v.get("color", "#4F46E5")
+        }
+    with open(FARMS_JSON_PATH, "w", encoding="utf-8") as f:
+        json.dump(to_save, f, ensure_ascii=False, indent=2)
+
+FARM_CONFIG = load_farms()
 
 SQLITE_DDL = """
 CREATE TABLE IF NOT EXISTS testgroup_master (
@@ -361,26 +546,6 @@ def init_db(farm_name):
 
     conn = db_connect(db_file)
     conn.executescript(SQLITE_DDL)
-    
-    # 시험군 등록
-    for code, name, start in cfg["test_groups"]:
-        conn.execute("INSERT INTO testgroup_master VALUES (?, ?, ?, NULL)", (code, name, start))
-    
-    # 개체 등록 (엑셀 실제 필드 반영) - 예시 개체 제거됨
-    sample_cattle = [
-        # 비어 있음
-    ]
-    for c in sample_cattle:
-        total_cost = c[13] + c[14] + c[15]
-        conn.execute(
-            "INSERT INTO cattle (cattle_id, kpn, birth_date, test_group_code, status, admission_date, closure_date, market_name, building, pen_number, feed_type, roughage_grade, castration_date, calf_price, commission_fee, transport_fee, initial_cost, memo, insurance_value, insurance_premium) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10], c[11], c[12], c[13], c[14], c[15], total_cost, c[16], c[17], c[18])
-        )
-    
-    # 품목/매입/사용량/고정비는 예전에 화면 확인용으로 넣어 둔 가짜 데모 데이터였다.
-    # 리셋 버튼을 누를 때마다 이 더미가 실데이터에 다시 섞여 들어가는 문제가 있어 제거했다.
-    # 리셋 후에는 빈 표 상태로 시작하고, 각 탭의 등록 폼으로 실제 값을 입력한다.
-
     conn.commit()
     conn.close()
 
@@ -711,17 +876,112 @@ st.sidebar.markdown(
 )
 st.sidebar.markdown("---")
 
-farm_names = list(FARM_CONFIG.keys())
+farm_names = ["🌟 시험농장 전체 현황"] + list(FARM_CONFIG.keys())
 selected_farm = st.sidebar.radio(
-    "🏠 관리 농장 선택",
+    "메뉴 및 농장 선택",
     farm_names,
     index=0,
-    help="정산을 수행할 농장을 선택하세요. 각 농장은 독립된 데이터베이스를 사용합니다."
+    help="전체 현황 대시보드를 보거나, 정산을 수행할 농장을 선택하세요."
 )
+
+if selected_farm == "🌟 시험농장 전체 현황":
+    st.title("한우 시험농장 관리 시스템")
+    st.markdown("데이터베이스 트리거에 의한 **단가 자동 갱신** 및 Pandas를 이용한 **월말 1/n 비용 분배**를 시각적으로 확인하는 대시보드입니다.")
+    st.subheader("🌐 전농장 통합 대시보드")
+    st.caption("등록된 모든 관리 농장(선산, 고아 등)의 개체 현황을 통합하여 보여줍니다.")
+    
+    all_cattle_dfs = []
+    
+    for farm_nm, farm_cfg_info in FARM_CONFIG.items():
+        f_db = farm_cfg_info["db_file"]
+        if os.path.exists(f_db):
+            try:
+                f_conn = sqlite3.connect(f_db)
+                df_f = pd.read_sql("SELECT cattle_id as 개체번호, status as 상태, admission_date as 입식일, castration_date as 거세일, closure_date as 종결일 FROM cattle", f_conn)
+                df_f['농장명'] = farm_nm
+                all_cattle_dfs.append(df_f)
+                f_conn.close()
+            except Exception as e:
+                pass
+                
+    if all_cattle_dfs:
+        df_all = pd.concat(all_cattle_dfs, ignore_index=True)
+        
+        total_admission = len(df_all)
+        current_breeding = len(df_all[df_all['상태'] == '사육'])
+        dead_cattle = len(df_all[df_all['상태'] == '폐사'])
+        shipped_cattle = len(df_all[df_all['상태'] == '출하'])
+        castrated_cattle = len(df_all[df_all['거세일'].notna() & (df_all['거세일'].astype(str).str.strip() != '')])
+        
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("전체 누적 입식", f"{total_admission}두")
+        m2.metric("현재 사육중", f"{current_breeding}두")
+        m3.metric("누적 폐사", f"{dead_cattle}두")
+        m4.metric("누적 출하", f"{shipped_cattle}두")
+        m5.metric("거세 완료", f"{castrated_cattle}두")
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        dash_c1, dash_c2 = st.columns(2)
+        with dash_c1:
+            st.markdown("##### 🏢 농장별 현재 사육 현황 (사육중)")
+            farm_breed_cnt = df_all[df_all['상태'] == '사육'].groupby('농장명').size().reset_index(name='마릿수')
+            if not farm_breed_cnt.empty:
+                st.bar_chart(farm_breed_cnt.set_index('농장명'))
+            else:
+                st.info("사육 중인 개체가 없습니다.")
+                
+            st.markdown("##### 🗓️ 월별 전체 입식 현황")
+            df_all['입식월'] = df_all['입식일'].str[:7]
+            monthly_adm = df_all[df_all['입식월'].notna()].groupby('입식월').size().reset_index(name='마릿수')
+            if not monthly_adm.empty:
+                st.bar_chart(monthly_adm.set_index('입식월'))
+                
+        with dash_c2:
+            st.markdown("##### ⚠️ 농장별 폐사 현황 (누적)")
+            farm_dead_cnt = df_all[df_all['상태'] == '폐사'].groupby('농장명').size().reset_index(name='마릿수')
+            if not farm_dead_cnt.empty:
+                st.bar_chart(farm_dead_cnt.set_index('농장명'))
+            else:
+                st.info("폐사된 개체가 없습니다.")
+                
+            st.markdown("##### 🔪 농장별 거세 현황 (누적)")
+            farm_cast_cnt = df_all[df_all['거세일'].notna() & (df_all['거세일'].astype(str).str.strip() != '')].groupby('농장명').size().reset_index(name='마릿수')
+            if not farm_cast_cnt.empty:
+                st.bar_chart(farm_cast_cnt.set_index('농장명'))
+            else:
+                st.info("거세된 개체가 없습니다.")
+                
+        with st.expander("통합 데이터 상세 표"):
+            st.dataframe(df_all, use_container_width=True, hide_index=True)
+    else:
+        st.info("데이터가 있는 농장이 없습니다.")
+    st.stop()
+
+with st.sidebar.expander("➕ 새 농장 추가"):
+    with st.form("add_farm_form", clear_on_submit=True):
+        new_farm_name = st.text_input("새 농장 이름")
+        new_farm_color = st.color_picker("테마 색상", "#3B82F6")
+        if st.form_submit_button("추가"):
+            if new_farm_name:
+                if new_farm_name in FARM_CONFIG:
+                    st.error("이미 존재하는 농장입니다.")
+                else:
+                    import re
+                    safe_name = re.sub(r'[\\/*?:"<>|]', "", new_farm_name)
+                    new_db_filename = f"erp_{safe_name}.db"
+                    FARM_CONFIG[new_farm_name] = {
+                        "db_filename": new_db_filename,
+                        "color": new_farm_color
+                    }
+                    save_farms(FARM_CONFIG)
+                    st.success(f"'{new_farm_name}' 농장이 추가되었습니다!")
+                    st.rerun()
 
 farm_cfg = FARM_CONFIG[selected_farm]
 DB_FILE = farm_cfg["db_file"]
 farm_color = farm_cfg["color"]
+
 
 # DB 자동 생성
 if not os.path.exists(DB_FILE):
@@ -904,6 +1164,11 @@ with tab_cattle:
                 new_group_name = st.text_input("시험군 명칭", placeholder="예: 대조군, 처리군A 등")
                 new_group_start = st.date_input("시작일")
                 
+                st.markdown("**기존 개체 자동 할당 (선택)**")
+                st.caption("선택한 동과 우방에 있는 기존 개체들이 이 시험군으로 자동 소속됩니다.")
+                new_group_buildings = st.multiselect("대상 동 선택", [f"{i}동" for i in range(1, 7)])
+                new_group_pens = st.multiselect("대상 우방 선택", list(range(1, 21)))
+                
                 # 버튼 넓이를 절반으로 줄이기 위해 컬럼 사용
                 btn_g1, btn_g2 = st.columns(2)
                 with btn_g1:
@@ -915,8 +1180,29 @@ with tab_cattle:
                             wc = db_connect(DB_FILE)
                             # 코드를 입력받지 않고 명칭을 코드로 동일하게 사용
                             wc.execute("INSERT INTO testgroup_master VALUES (?, ?, ?, NULL)", (new_group_name, new_group_name, new_group_start.isoformat()))
+                            
+                            # 개체 자동 할당 로직
+                            assigned_cnt = 0
+                            if new_group_buildings or new_group_pens:
+                                conditions = []
+                                params = [new_group_name]
+                                if new_group_buildings:
+                                    conditions.append(f"building IN ({','.join(['?']*len(new_group_buildings))})")
+                                    params.extend(new_group_buildings)
+                                if new_group_pens:
+                                    conditions.append(f"pen_number IN ({','.join(['?']*len(new_group_pens))})")
+                                    params.extend(new_group_pens)
+                                
+                                query = f"UPDATE cattle SET test_group_code = ? WHERE " + " AND ".join(conditions)
+                                wc.execute(query, params)
+                                assigned_cnt = wc.execute("SELECT changes()").fetchone()[0]
+
                             wc.commit(); wc.close()
-                            st.success(f"시험군 '{new_group_name}' 등록 완료")
+                            
+                            if assigned_cnt > 0:
+                                st.success(f"시험군 '{new_group_name}' 등록 완료 (개체 {assigned_cnt}마리 자동 할당됨)")
+                            else:
+                                st.success(f"시험군 '{new_group_name}' 등록 완료")
                             st.rerun()
                         except sqlite3.IntegrityError:
                             wc.rollback(); wc.close()
@@ -936,7 +1222,12 @@ with tab_cattle:
                     # 시험명칭만 깔끔하게 표시
                     group_opts = {r['시험명칭']: r['시험군코드'] for _, r in df_groups.iterrows()}
                     edit_target = st.selectbox("대상 시험군", list(group_opts.keys()))
-                    edit_name = st.text_input("새 시험명칭", placeholder="새로운 명칭을 입력하세요 (수정 시에만)")
+                    edit_name = st.text_input("새 시험명칭", placeholder="새로운 명칭을 입력하세요 (명칭 변경시에만 입력)")
+                    
+                    st.markdown("**기존 개체 추가 편입 (선택)**")
+                    edit_buildings = st.multiselect("대상 동 선택", [f"{i}동" for i in range(1, 7)], key="edit_b")
+                    edit_pens = st.multiselect("대상 우방 선택", list(range(1, 21)), key="edit_p")
+                    st.caption("선택한 동과 우방에 있는 개체들이 이 시험군으로 소속이 변경됩니다.")
                     
                     col_b1, col_b2 = st.columns(2)
                     with col_b1:
@@ -945,15 +1236,38 @@ with tab_cattle:
                         submitted_delete = st.form_submit_button("삭제", type="secondary", use_container_width=True)
                         
                     if submitted_edit:
+                        target_code = group_opts[edit_target]
+                        wc = db_connect(DB_FILE)
+                        updates = []
+                        
                         if edit_name:
-                            target_code = group_opts[edit_target]
-                            wc = db_connect(DB_FILE)
                             wc.execute("UPDATE testgroup_master SET test_name = ? WHERE test_group_code = ?", (edit_name, target_code))
-                            wc.commit(); wc.close()
-                            st.success(f"시험군 명칭 수정 완료")
+                            updates.append("명칭 변경")
+                            
+                        assigned_cnt = 0
+                        if edit_buildings or edit_pens:
+                            conditions = []
+                            params = [target_code]
+                            if edit_buildings:
+                                conditions.append(f"building IN ({','.join(['?']*len(edit_buildings))})")
+                                params.extend(edit_buildings)
+                            if edit_pens:
+                                conditions.append(f"pen_number IN ({','.join(['?']*len(edit_pens))})")
+                                params.extend(edit_pens)
+                            
+                            query = f"UPDATE cattle SET test_group_code = ? WHERE " + " AND ".join(conditions)
+                            wc.execute(query, params)
+                            assigned_cnt = wc.execute("SELECT changes()").fetchone()[0]
+                            if assigned_cnt > 0:
+                                updates.append(f"개체 {assigned_cnt}마리 추가 편입")
+                                
+                        wc.commit(); wc.close()
+                        
+                        if updates:
+                            st.success(f"시험군 업데이트 완료: {', '.join(updates)}")
                             st.rerun()
                         else:
-                            st.warning("새 시험명칭을 입력하세요.")
+                            st.info("수정된 내용이나 추가로 편입된 개체가 없습니다.")
                     
                     if submitted_delete:
                         target_code = group_opts[edit_target]
@@ -1194,9 +1508,9 @@ with tab_cattle:
                     
                     c7, c8, c9 = st.columns(3)
                     with c7:
-                        new_building = st.selectbox("동", ["1동", "2동", "3동", "4동"])
+                        new_building = st.selectbox("동", [f"{i}동" for i in range(1, 7)])
                     with c8:
-                        new_pen = st.number_input("우방 (칸번호)", min_value=1, max_value=19, value=1)
+                        new_pen = st.number_input("우방 (칸번호)", min_value=1, max_value=20, value=1)
                     with c9:
                         new_feed_type = st.selectbox("사료구분", ["표준", "증량형", "제한형"])
                     
@@ -1252,7 +1566,13 @@ with tab_cattle:
         
         with col_st:
             st.subheader("상태 변경 (출하 / 폐사)")
-            active_cattle = pd.read_sql("SELECT cattle_id, test_group_code, building, pen_number FROM cattle WHERE status = '사육' ORDER BY cattle_id", conn)
+            active_cattle = pd.read_sql("""
+                SELECT c.cattle_id, c.test_group_code, t.test_name, c.building, c.pen_number 
+                FROM cattle c 
+                LEFT JOIN testgroup_master t ON c.test_group_code = t.test_group_code 
+                WHERE c.status = '사육' 
+                ORDER BY c.cattle_id
+            """, conn)
             if active_cattle.empty:
                 st.info("현재 사육 중인 개체가 없습니다.")
             else:
@@ -1266,7 +1586,8 @@ with tab_cattle:
                     cattle_opts = {}
                     for _, r in active_cattle.iterrows():
                         b = str(r['building']).strip() if pd.notnull(r['building']) and str(r['building']).lower() != 'nan' else ""
-                        label = f"{r['cattle_id']} ({r['test_group_code']}) {b}".strip()
+                        gname = r['test_name'] if pd.notna(r['test_name']) else r['test_group_code']
+                        label = f"{r['cattle_id']} ({gname}) {b}".strip()
                         cattle_opts[label] = r['cattle_id']
                         
                     with st.form("change_status_form", clear_on_submit=True):
@@ -1287,27 +1608,57 @@ with tab_cattle:
                             st.rerun()
                     
                     st.markdown("---")
-                    st.subheader("시험군 이동 (소속 변경)")
+                    st.subheader("개체 위치(동/우방) 및 시험군 이동")
+                    st.caption("우방을 변경하면 해당 우방에 있는 개체들과 같은 시험군으로 자동 소속됩니다.")
+                    
                     groups_for_move = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master", conn)
-                    if groups_for_move.empty:
-                        st.info("등록된 시험군이 없습니다.")
-                    else:
-                        move_group_opts = {r['test_name']: r['test_group_code'] for _, r in groups_for_move.iterrows()}
-                        with st.form("move_group_form", clear_on_submit=True):
-                            move_cattle_label = st.selectbox("이동할 개체 선택", list(cattle_opts.keys()), key="move_cattle_sel")
-                            move_target_group = st.selectbox("이동할 시험군", list(move_group_opts.keys()))
+                    move_group_opts = {r['test_name']: r['test_group_code'] for _, r in groups_for_move.iterrows()}
+                    
+                    with st.form("move_cattle_form", clear_on_submit=True):
+                        move_cattle_labels = st.multiselect("이동할 개체 선택 (다중 선택 가능)", list(cattle_opts.keys()), key="move_cattle_sel")
+                        
+                        m1, m2 = st.columns(2)
+                        with m1:
+                            move_b = st.selectbox("새로운 동", [f"{i}동" for i in range(1, 7)])
+                        with m2:
+                            move_p = st.number_input("새로운 우방", min_value=1, max_value=20, value=1)
                             
-                            btn_m1, btn_m2 = st.columns(2)
-                            with btn_m1:
-                                submitted_move = st.form_submit_button("시험군 이동", type="primary", use_container_width=True)
-                                
-                            if submitted_move:
-                                move_cid = cattle_opts[move_cattle_label]
-                                move_gcode = move_group_opts[move_target_group]
+                        manual_group = st.selectbox("수동 시험군 지정 (자동 할당을 원치 않을 경우)", ["(자동으로 찾기)"] + list(move_group_opts.keys()))
+                        
+                        btn_m1, btn_m2 = st.columns(2)
+                        with btn_m1:
+                            submitted_move = st.form_submit_button("위치 및 소속 변경", type="primary", use_container_width=True)
+                            
+                        if submitted_move:
+                            if not move_cattle_labels:
+                                st.warning("이동할 개체를 하나 이상 선택하세요.")
+                            else:
                                 wc = db_connect(DB_FILE)
-                                wc.execute("UPDATE cattle SET test_group_code = ? WHERE cattle_id = ?", (move_gcode, move_cid))
+                                moving_cids = [cattle_opts[lbl] for lbl in move_cattle_labels]
+                                placeholders = ",".join(["?"] * len(moving_cids))
+                                
+                                target_gcode = None
+                                if manual_group != "(자동으로 찾기)":
+                                    target_gcode = move_group_opts[manual_group]
+                                else:
+                                    # 이동할 개체들을 제외한 목적지 우방의 기존 소들 중에서 시험군을 찾음
+                                    query = f"SELECT test_group_code FROM cattle WHERE building=? AND pen_number=? AND status='사육' AND test_group_code IS NOT NULL AND cattle_id NOT IN ({placeholders}) LIMIT 1"
+                                    dest_row = wc.execute(query, [move_b, move_p] + moving_cids).fetchone()
+                                    if dest_row:
+                                        target_gcode = dest_row[0]
+                                
+                                for cid in moving_cids:
+                                    indiv_gcode = target_gcode
+                                    if indiv_gcode is None:
+                                        cur_row = wc.execute("SELECT test_group_code FROM cattle WHERE cattle_id=?", (cid,)).fetchone()
+                                        if cur_row:
+                                            indiv_gcode = cur_row[0]
+                                            
+                                    wc.execute("UPDATE cattle SET building = ?, pen_number = ?, test_group_code = ? WHERE cattle_id = ?", (move_b, move_p, indiv_gcode, cid))
+                                
                                 wc.commit(); wc.close()
-                                st.success(f"개체 '{move_cid}' → '{move_target_group}'(으)로 이동 완료")
+                                
+                                st.success(f"개체 {len(moving_cids)}마리 → {move_b} {move_p}번 우방으로 이동 완료")
                                 st.rerun()
         
         with col_dis:
