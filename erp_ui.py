@@ -462,10 +462,16 @@ def migrate_schema(db_file):
     conn = sqlite3.connect(db_file, timeout=30)
     try:
         conn.executescript(SQLITE_DDL)
-        try:
-            conn.execute("ALTER TABLE testgroup_master ADD COLUMN location_mapping TEXT")
-        except sqlite3.OperationalError:
-            pass
+        # CREATE TABLE IF NOT EXISTS 는 이미 있는 표에는 손을 대지 않으므로,
+        # 기존 표에 나중에 추가된 컬럼은 여기서 하나씩 채워 넣는다.
+        for table, column, coldef in (
+            ("testgroup_master", "location_mapping", "TEXT"),
+            ("purchase", "unit", "TEXT"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coldef}")
+            except sqlite3.OperationalError:
+                pass
         conn.commit()
     finally:
         conn.close()
