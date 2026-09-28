@@ -351,6 +351,7 @@ CREATE TABLE IF NOT EXISTS item_master (
     item_code TEXT PRIMARY KEY,
     item_name TEXT NOT NULL,
     category TEXT CHECK (category IN ('사료', '조사료', '약품', '기타저장품')) NOT NULL,
+    unit TEXT,
     current_stock NUMERIC(10, 2) NOT NULL DEFAULT 0,
     moving_avg_price NUMERIC(12, 2) NOT NULL DEFAULT 0
 );
@@ -467,6 +468,7 @@ def migrate_schema(db_file):
         for table, column, coldef in (
             ("testgroup_master", "location_mapping", "TEXT"),
             ("purchase", "unit", "TEXT"),
+            ("item_master", "unit", "TEXT"),
         ):
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coldef}")
@@ -2072,7 +2074,7 @@ with tab1:
     with col_b:
         st.subheader("품목 및 재고 상태")
         st.caption("매입 시마다 이동평균단가가 자동으로 갱신됩니다.")
-        df_item = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
+        df_item = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, unit as 단위, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
         st.dataframe(df_item, use_container_width=True, hide_index=True)
 
 with tab0:
@@ -2095,6 +2097,7 @@ with tab0:
             st.text_input("품목코드 (자동부여)", value=next_item_code, disabled=True)
             new_item_name = st.text_input("품목명", placeholder="예: TMR사료")
             new_item_category = st.selectbox("분류", ["사료", "조사료", "약품", "기타저장품"])
+            new_item_unit = st.selectbox("단위", ["kg", "ml", "개"])
             submitted_item = st.form_submit_button("품목 등록", type="primary", use_container_width=True)
             if submitted_item:
                 if new_item_name:
@@ -2109,8 +2112,11 @@ with tab0:
                             d = ''.join(filter(str.isdigit, str(c)))
                             if d: m_num = max(m_num, int(d))
                         final_item_code = f"ITEM{m_num + 1}"
-                        
-                        write_conn.execute("INSERT INTO item_master VALUES (?, ?, ?, 0, 0)", (final_item_code, new_item_name, new_item_category))
+
+                        write_conn.execute(
+                            "INSERT INTO item_master (item_code, item_name, category, unit, current_stock, moving_avg_price) VALUES (?, ?, ?, ?, 0, 0)",
+                            (final_item_code, new_item_name, new_item_category, new_item_unit)
+                        )
                         write_conn.commit()
                         write_conn.close()
                         st.success(f"품목 '{new_item_name}' ({final_item_code})이 등록되었습니다.")
@@ -2123,25 +2129,28 @@ with tab0:
         
         st.markdown("---")
         st.markdown("##### 등록된 품목 목록 (체크박스로 삭제 가능)")
-        df_items_all = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
+        df_items_all = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, unit as 단위, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
         df_items_all.insert(0, "삭제", False)
-        
+
         edited_item_df = st.data_editor(
             df_items_all,
             use_container_width=True,
             hide_index=True,
             disabled=["품목코드", "현재재고", "이동평균단가"],
+            column_config={
+                "단위": st.column_config.SelectboxColumn("단위", options=["kg", "ml", "개"]),
+            },
             num_rows="dynamic",
             key="item_master_editor"
         )
-        
+
         if st.button("품목 수정 사항 저장", type="secondary", use_container_width=True):
             write_conn = db_connect(DB_FILE)
             current_codes = edited_item_df[~edited_item_df["삭제"]]['품목코드'].dropna().tolist()
-            
+
             for _, row in edited_item_df.iterrows():
                 if not row.get("삭제", False) and pd.notna(row['품목코드']):
-                    write_conn.execute("UPDATE item_master SET item_name=?, category=? WHERE item_code=?", (row['품목명'], row['분류'], row['품목코드']))
+                    write_conn.execute("UPDATE item_master SET item_name=?, category=?, unit=? WHERE item_code=?", (row['품목명'], row['분류'], row.get('단위'), row['품목코드']))
             
             original_codes = df_items_all['품목코드'].dropna().tolist()
             missing_codes = set(original_codes) - set(current_codes)
@@ -2160,28 +2169,28 @@ with tab0:
         st.subheader("🚚 매입(입고) 등록")
         st.caption("사료·조사료·약품을 매입하면 재고와 이동평균단가가 자동 갱신됩니다.")
         
-        # 품목 목록 가져오기
-        items_df = pd.read_sql("SELECT item_code, item_name, category FROM item_master", conn)
+        # 품목 목록 가져오기 (단위는 품목 등록 시 정한 값을 그대로 사용한다)
+        items_df = pd.read_sql("SELECT item_code, item_name, category, unit FROM item_master", conn)
         if items_df.empty:
             st.info("먼저 좌측에서 품목을 등록해 주세요.")
         else:
-            item_options = {f"{r['item_name']} ({r['item_code']}) [{r['category']}]": r['item_code'] for _, r in items_df.iterrows()}
-            
+            item_options = {f"{r['item_name']} ({r['item_code']}) [{r['category']} · {r['unit'] or '단위 미지정'}]": r['item_code'] for _, r in items_df.iterrows()}
+            item_units = {r['item_code']: r['unit'] for _, r in items_df.iterrows()}
+
             with st.form("add_purchase_form", clear_on_submit=True):
                 purchase_item_label = st.selectbox("매입 품목", list(item_options.keys()))
                 purchase_date = st.date_input("매입일자")
-                col_q, col_u, col_a2 = st.columns([2, 1, 3])
+                col_q, col_a2 = st.columns(2)
                 with col_q:
                     purchase_qty = st.number_input("매입수량", min_value=0.01, step=1.0, format="%.2f")
-                with col_u:
-                    purchase_unit = st.selectbox("단위", ["kg", "ml", "개"])
                 with col_a2:
                     purchase_amount = st.number_input("총매입금액 (원)", min_value=0, step=10000)
-                
+
                 submitted_purchase = st.form_submit_button("매입 등록", type="primary", use_container_width=True)
                 if submitted_purchase:
                     if purchase_qty > 0 and purchase_amount > 0:
                         selected_item_code = item_options[purchase_item_label]
+                        purchase_unit = item_units.get(selected_item_code) or ""
                         write_conn = db_connect(DB_FILE)
                         write_conn.execute(
                             "INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount) VALUES (?, ?, ?, ?, ?)",
