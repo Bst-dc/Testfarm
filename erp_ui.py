@@ -35,6 +35,27 @@ def clean_excel_text(val):
         return None
     return text
 
+def format_thousands_input(key):
+    """숫자를 입력받는 text_input의 on_change 콜백.
+    입력한 값에서 콤마를 뗀 뒤 다시 천단위 콤마를 붙여 session_state에 되돌려 놓는다."""
+    raw = st.session_state.get(key, "")
+    cleaned = raw.replace(",", "").strip()
+    if not cleaned:
+        return
+    try:
+        num = float(cleaned)
+    except ValueError:
+        return
+    st.session_state[key] = f"{int(num):,}" if num == int(num) else f"{num:,.2f}"
+
+def parse_thousands_input(key):
+    """format_thousands_input 으로 콤마가 붙은 텍스트를 다시 숫자로 되돌린다."""
+    cleaned = st.session_state.get(key, "").replace(",", "").strip()
+    try:
+        return float(cleaned) if cleaned else 0.0
+    except ValueError:
+        return 0.0
+
 # ========== 데이터 저장 위치 ==========
 # 로컬 PC와 클라우드(영구 볼륨)에서 같은 코드가 돌아가도록 경로를 환경변수로 분리한다.
 #   - 로컬 윈도우 : 기본값 (사용자 폴더)/시험농장DB
@@ -2177,32 +2198,46 @@ with tab0:
             item_options = {f"{r['item_name']} ({r['item_code']}) [{r['category']} · {r['unit'] or '단위 미지정'}]": r['item_code'] for _, r in items_df.iterrows()}
             item_units = {r['item_code']: r['unit'] for _, r in items_df.iterrows()}
 
-            with st.form("add_purchase_form", clear_on_submit=True):
-                purchase_item_label = st.selectbox("매입 품목", list(item_options.keys()))
-                purchase_date = st.date_input("매입일자")
-                col_q, col_a2 = st.columns(2)
-                with col_q:
-                    purchase_qty = st.number_input("매입수량", min_value=0.01, step=1.0, format="%.2f")
-                with col_a2:
-                    purchase_amount = st.number_input("총매입금액 (원)", min_value=0, step=10000)
+            # 매입수량/총매입금액은 천단위 콤마를 보여줘야 해서 st.number_input이 아닌
+            # text_input + on_change 콜백으로 처리한다. 콤마 입력창은 st.form 안에서는
+            # 제출 전까지 rerun이 안 돼 즉시 반영되지 않으므로, 이 폼은 st.form을 쓰지 않는다.
+            if st.session_state.pop("_reset_purchase_fields", False):
+                st.session_state["purchase_qty_text"] = ""
+                st.session_state["purchase_amount_text"] = ""
 
-                submitted_purchase = st.form_submit_button("매입 등록", type="primary", use_container_width=True)
-                if submitted_purchase:
-                    if purchase_qty > 0 and purchase_amount > 0:
-                        selected_item_code = item_options[purchase_item_label]
-                        purchase_unit = item_units.get(selected_item_code) or ""
-                        write_conn = db_connect(DB_FILE)
-                        write_conn.execute(
-                            "INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount) VALUES (?, ?, ?, ?, ?)",
-                            (purchase_date.isoformat(), selected_item_code, purchase_qty, purchase_unit, purchase_amount)
-                        )
-                        write_conn.commit()
-                        write_conn.close()
-                        unit_price = purchase_amount / purchase_qty
-                        st.success(f"매입 완료! {purchase_item_label} | {purchase_qty:,.1f} {purchase_unit} | {purchase_amount:,}원 (단가 {unit_price:,.0f}원)")
-                        st.rerun()
-                    else:
-                        st.warning("수량과 금액을 올바르게 입력하세요.")
+            purchase_item_label = st.selectbox("매입 품목", list(item_options.keys()), key="purchase_item_sel")
+            purchase_date = st.date_input("매입일자", key="purchase_date_input")
+            col_q, col_a2 = st.columns(2)
+            with col_q:
+                st.text_input(
+                    "매입수량", key="purchase_qty_text", placeholder="예: 1,000",
+                    on_change=format_thousands_input, args=("purchase_qty_text",),
+                )
+            with col_a2:
+                st.text_input(
+                    "총매입금액 (원)", key="purchase_amount_text", placeholder="예: 3,000,000",
+                    on_change=format_thousands_input, args=("purchase_amount_text",),
+                )
+
+            if st.button("매입 등록", type="primary", use_container_width=True, key="submit_purchase_btn"):
+                purchase_qty = parse_thousands_input("purchase_qty_text")
+                purchase_amount = parse_thousands_input("purchase_amount_text")
+                if purchase_qty > 0 and purchase_amount > 0:
+                    selected_item_code = item_options[purchase_item_label]
+                    purchase_unit = item_units.get(selected_item_code) or ""
+                    write_conn = db_connect(DB_FILE)
+                    write_conn.execute(
+                        "INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount) VALUES (?, ?, ?, ?, ?)",
+                        (purchase_date.isoformat(), selected_item_code, purchase_qty, purchase_unit, purchase_amount)
+                    )
+                    write_conn.commit()
+                    write_conn.close()
+                    unit_price = purchase_amount / purchase_qty
+                    st.session_state["_reset_purchase_fields"] = True
+                    st.success(f"매입 완료! {purchase_item_label} | {purchase_qty:,.1f} {purchase_unit} | {purchase_amount:,}원 (단가 {unit_price:,.0f}원)")
+                    st.rerun()
+                else:
+                    st.warning("수량과 금액을 올바르게 입력하세요.")
         
         st.markdown("---")
         st.markdown("##### 매입 내역 (체크박스로 삭제 가능)")
@@ -2279,21 +2314,29 @@ with tab2:
             group_options = {f"{r['test_name']} ({r['test_group_code']})": r['test_group_code'] for _, r in groups_df.iterrows()}
             item_options2 = {f"{r['item_name']} ({r['item_code']}) [{r['category']}]": r['item_code'] for _, r in items_df2.iterrows()}
             
+            # 정산연월은 같은 달에 품목을 여러 번 등록하는 경우가 많아서, 폼이
+            # clear_on_submit 으로 초기화되어도 마지막에 등록한 연월이 유지되도록 한다.
+            if "last_usage_month" not in st.session_state:
+                st.session_state["last_usage_month"] = "2023-10"
+
             with st.form("add_usage_form", clear_on_submit=True):
-                usage_month = st.text_input("정산연월", value="2023-10", help="형식: YYYY-MM")
+                usage_month = st.text_input("정산연월", value=st.session_state["last_usage_month"], help="형식: YYYY-MM")
                 usage_group_label = st.selectbox("시험군", list(group_options.keys()))
                 usage_item_label = st.selectbox("사용 품목", list(item_options2.keys()))
                 usage_qty = st.number_input("총 사용량 (kg/개)", min_value=0.01, step=1.0, format="%.2f")
-                
+
                 submitted_usage = st.form_submit_button("사용량 등록", type="primary", width="stretch")
                 if submitted_usage:
                     if usage_qty > 0 and usage_month:
                         sel_group = group_options[usage_group_label]
                         sel_item = item_options2[usage_item_label]
                         # 현재 이동평균단가 조회
-                        avg_price = items_df2[items_df2['item_code'] == sel_item]['moving_avg_price'].iloc[0]
+                        # (moving_avg_price가 정수값이면 pandas가 numpy.int64로 읽어오는데,
+                        #  sqlite3가 이를 숫자로 인식하지 못하고 그대로 바이너리로 저장해버려
+                        #  float()로 순수 파이썬 숫자로 바꿔서 넘긴다)
+                        avg_price = float(items_df2[items_df2['item_code'] == sel_item]['moving_avg_price'].iloc[0])
                         calc_amount = round(usage_qty * avg_price, 2)
-                        
+
                         write_conn = db_connect(DB_FILE)
                         write_conn.execute(
                             "INSERT INTO monthly_usage (settlement_month, test_group_code, item_code, total_usage, applied_price, calculated_amount) VALUES (?, ?, ?, ?, ?, ?)",
@@ -2301,6 +2344,7 @@ with tab2:
                         )
                         write_conn.commit()
                         write_conn.close()
+                        st.session_state["last_usage_month"] = usage_month
                         st.success(f"등록 완료! {usage_group_label} | {usage_item_label} | {usage_qty:,.1f} 사용 | 적용단가 {avg_price:,.0f}원 | 산출액 {calc_amount:,.0f}원")
                         st.rerun()
                     else:
@@ -2318,16 +2362,53 @@ with tab2:
             JOIN item_master i ON u.item_code = i.item_code
             ORDER BY u.settlement_month DESC, t.test_name
         """, conn)
-        st.dataframe(df_usage, width="stretch", hide_index=True)
+        df_usage.insert(0, "삭제", False)
+
+        edited_usage_df = st.data_editor(
+            df_usage,
+            width="stretch",
+            hide_index=True,
+            disabled=["ID", "시험군", "품목명", "산출총액"],
+            num_rows="dynamic",
+            key="usage_editor",
+        )
+
+        if st.button("사용 내역 수정 사항 저장", type="secondary", width="stretch"):
+            write_conn = db_connect(DB_FILE)
+            current_usage_ids = edited_usage_df[~edited_usage_df["삭제"]]['ID'].dropna().tolist()
+
+            for _, row in edited_usage_df.iterrows():
+                uid = row['ID']
+                if not row.get("삭제", False) and pd.notna(uid):
+                    qty = float(row['사용량'])
+                    price = float(row['적용단가'])
+                    calc_amount = round(qty * price, 2)
+                    write_conn.execute(
+                        "UPDATE monthly_usage SET settlement_month=?, total_usage=?, applied_price=?, calculated_amount=? WHERE usage_id=?",
+                        (row['정산연월'], qty, price, calc_amount, uid)
+                    )
+
+            original_usage_ids = df_usage['ID'].dropna().tolist()
+            missing_usage_ids = set(original_usage_ids) - set(current_usage_ids)
+            for uid in missing_usage_ids:
+                write_conn.execute("DELETE FROM monthly_usage WHERE usage_id=?", (uid,))
+
+            write_conn.commit()
+            write_conn.close()
+            st.success("사용 내역이 업데이트 되었습니다.")
+            st.rerun()
     
     with col_d:
         st.markdown("##### ⚡ 농장 고정비 등록")
-        
+
+        if "last_fc_month" not in st.session_state:
+            st.session_state["last_fc_month"] = "2023-10"
+
         with st.form("add_fixedcost_form", clear_on_submit=True):
-            fc_month = st.text_input("정산연월 ", value="2023-10", help="형식: YYYY-MM")
+            fc_month = st.text_input("정산연월 ", value=st.session_state["last_fc_month"], help="형식: YYYY-MM")
             fc_item = st.selectbox("지출 항목", ["인건비", "전기세", "시험사양수고비", "CCTV사용료", "우수등급장려금", "기타"])
             fc_amount = st.number_input("총 청구금액 (원)", min_value=0, step=10000)
-            
+
             submitted_fc = st.form_submit_button("고정비 등록", type="primary", width="stretch")
             if submitted_fc:
                 if fc_amount > 0 and fc_month:
@@ -2338,6 +2419,7 @@ with tab2:
                     )
                     write_conn.commit()
                     write_conn.close()
+                    st.session_state["last_fc_month"] = fc_month
                     st.success(f"등록 완료! [{fc_month}] {fc_item} | {fc_amount:,}원")
                     st.rerun()
                 else:
