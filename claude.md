@@ -21,6 +21,10 @@
 - 백업 폴더: `(ERP_DB_DIR)\backup` — 매일 첫 접속 시 자동 백업 + 사이드바에서 수동 백업/다운로드/복원 가능.
 
 ## 3. 최근 완료된 주요 작업 (최신순)
+- **엑셀 일괄등록이 "이미 등록되어 건너뜀"으로만 끝나던 문제 수정**:
+  - 원인은 중복이 아니라 **예전 DB의 CHECK 제약**이었음. 옛 스키마의 `cattle.feed_type`/`roughage_grade` 는 `('제한형','증량형')`/`('고급','저급')` 만 허용했는데, 일괄등록은 빈 값일 때 `'표준'` 을 기본값으로 넣어 모든 행이 `CHECK constraint failed` 로 거부됐다. 그런데 예전 코드가 모든 `sqlite3.IntegrityError` 를 '건너뜀'으로 집계해 중복인 것처럼 보였다.
+  - `migrate_schema()` 에 `_migrate_cattle_default_check()` 추가: CHECK 제약은 `ALTER TABLE` 로 못 고치므로 `cattle` 표를 새로 만들어 데이터를 옮긴다. 이때 **`PRAGMA legacy_alter_table = ON` 필수** — 안 하면 RENAME 시 `disease_record`/`cattle_cost_log`/`cattle_item_usage_log` 의 `REFERENCES cattle(...)` 이 임시 표 이름으로 따라 바뀌어 참조가 끊긴다. 그 상태로 남은 DB를 되돌리는 `_repair_dangling_cattle_refs()` 도 함께 둠.
+  - 일괄등록 오류는 `UNIQUE` 만 '건너뜀'으로 집계하고, 그 외 제약 위반은 사유별로 모아 결과 메시지에 함께 표시(`st.rerun()` 이 화면을 지워 per-row `st.error` 는 보이지 않았음).
 - **결산 리포트(HTML/PDF) 생성 기능 구현** (이전까지 Next Steps 1순위였던 항목):
   - `generate_settlement_report()`: 정산월의 `cattle_cost_log`를 `cattle`/`testgroup_master`와 조인해, 개체별 변동비·고정비·합계와 시험군별 색상 배지가 들어간 인쇄용 HTML(Tailwind CDN, `report_2023-10.html` 목업 디자인 계승)을 생성. 사용자 입력값은 `html.escape`로 이스케이프.
   - `list_settled_months()`: 정산 완료된 연월 목록(최신순) 조회.

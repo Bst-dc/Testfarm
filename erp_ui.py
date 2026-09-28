@@ -495,9 +495,102 @@ def migrate_schema(db_file):
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coldef}")
             except sqlite3.OperationalError:
                 pass
+        _migrate_cattle_default_check(conn)
+        _repair_dangling_cattle_refs(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate_cattle_default_check(conn):
+    """예전에 만들어진 DB는 cattle.feed_type/roughage_grade의 CHECK 제약에
+    '표준' 값이 빠진 채로 남아 있다 (예: ('제한형','증량형')만 허용, 기본값 '증량형').
+    엑셀 일괄등록은 값이 비어 있으면 '표준'을 기본값으로 넣는데, 이 CHECK 제약
+    때문에 매번 "CHECK constraint failed"로 등록이 거부되고, 이 오류가 예전
+    코드에서는 '이미 등록되어 건너뜀'으로 잘못 표시됐었다.
+    CHECK 제약은 ALTER TABLE로 고칠 수 없으므로, 표를 새로 만들어 데이터를 옮긴다."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='cattle'"
+    ).fetchone()
+    if not row or not row[0]:
+        return
+    if "IN ('표준', '제한형', '증량형')" in row[0] and "IN ('표준', '고급', '저급')" in row[0]:
+        return  # 이미 최신 스키마
+
+    # legacy_alter_table=ON 이 없으면 RENAME 시 다른 표(disease_record 등)의
+    # REFERENCES cattle(...) 가 임시 표 이름으로 따라 바뀌어, 임시 표를 지운 뒤
+    # 참조가 끊긴 표만 남는다.
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    conn.execute("ALTER TABLE cattle RENAME TO cattle_old_migration")
+    conn.execute("""
+        CREATE TABLE cattle (
+            cattle_id TEXT PRIMARY KEY,
+            kpn TEXT,
+            birth_date DATE,
+            test_group_code TEXT REFERENCES testgroup_master(test_group_code),
+            status TEXT CHECK (status IN ('사육', '출하', '폐사')) NOT NULL DEFAULT '사육',
+            admission_date DATE,
+            closure_date DATE,
+            market_name TEXT,
+            building TEXT,
+            pen_number INTEGER,
+            feed_type TEXT CHECK (feed_type IN ('표준', '제한형', '증량형')) DEFAULT '표준',
+            roughage_grade TEXT CHECK (roughage_grade IN ('표준', '고급', '저급')) DEFAULT '표준',
+            castration_date DATE,
+            calf_price NUMERIC(12, 2) NOT NULL DEFAULT 0,
+            commission_fee NUMERIC(12, 2) NOT NULL DEFAULT 0,
+            transport_fee NUMERIC(12, 2) NOT NULL DEFAULT 0,
+            initial_cost NUMERIC(12, 2) NOT NULL DEFAULT 0,
+            insurance_value NUMERIC(12, 2) DEFAULT 0,
+            insurance_premium NUMERIC(12, 2) DEFAULT 0,
+            accident_date DATE,
+            insurance_claim NUMERIC(12, 2) DEFAULT 0,
+            memo TEXT
+        )
+    """)
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(cattle_old_migration)").fetchall()]
+    col_list = ", ".join(columns)
+    conn.execute(f"INSERT INTO cattle ({col_list}) SELECT {col_list} FROM cattle_old_migration")
+    conn.execute("DROP TABLE cattle_old_migration")
+    conn.execute("PRAGMA legacy_alter_table = OFF")
+
+
+def _table_ddl(table):
+    """SQLITE_DDL 에서 해당 표의 CREATE TABLE 문만 잘라 낸다."""
+    marker = f"CREATE TABLE IF NOT EXISTS {table} ("
+    start = SQLITE_DDL.find(marker)
+    if start < 0:
+        return None
+    end = SQLITE_DDL.find(");", start)
+    return SQLITE_DDL[start:end + 1]
+
+
+def _repair_dangling_cattle_refs(conn):
+    """cattle 표를 다시 만드는 과정에서 다른 표의 REFERENCES cattle(...) 이
+    사라진 임시 표 이름을 가리킨 채 남은 DB를 되돌린다.
+    참조가 끊긴 표는 foreign_keys=ON 상태에서 INSERT 하면 'no such table' 로 실패한다."""
+    broken = [
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name <> 'cattle_old_migration' AND sql LIKE '%cattle_old_migration%'"
+        ).fetchall()
+    ]
+    if not broken:
+        return
+
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    for table in broken:
+        ddl = _table_ddl(table)
+        if not ddl:
+            continue
+        tmp = f"{table}_fkfix"
+        conn.execute(f"ALTER TABLE {table} RENAME TO {tmp}")
+        conn.execute(ddl)
+        columns = [r[1] for r in conn.execute(f"PRAGMA table_info({tmp})").fetchall()]
+        col_list = ", ".join(columns)
+        conn.execute(f"INSERT INTO {table} ({col_list}) SELECT {col_list} FROM {tmp}")
+        conn.execute(f"DROP TABLE {tmp}")
+    conn.execute("PRAGMA legacy_alter_table = OFF")
 
 
 # ========== 백업 ==========
@@ -1611,6 +1704,7 @@ with tab_cattle:
                             if do_bulk_upload:
                                 wc = db_connect(DB_FILE)
                                 success_cnt, skip_cnt, fail_cnt, filled_cnt = 0, 0, 0, 0
+                                fail_reasons = {}
                                 seen_ids = set()
                                 selected_bulk_group_code = cattle_group_opts[bulk_group_label]
                                 
@@ -1740,11 +1834,15 @@ with tab_cattle:
                                             )
                                         )
                                         success_cnt += 1
-                                    except sqlite3.IntegrityError:
-                                        # 위에서 걸러지지 않은 중복(동시 입력 등)도 오류가 아닌 '건너뜀'으로 처리
-                                        skip_cnt += 1
+                                    except sqlite3.IntegrityError as e:
+                                        if "UNIQUE" in str(e):
+                                            # 위에서 걸러지지 않은 중복(동시 입력 등)도 오류가 아닌 '건너뜀'으로 처리
+                                            skip_cnt += 1
+                                        else:
+                                            fail_reasons.setdefault(str(e), []).append(cid)
+                                            fail_cnt += 1
                                     except Exception as e:
-                                        st.error(f"알 수 없는 에러 (이표번호 {cid}): {e}")
+                                        fail_reasons.setdefault(str(e), []).append(cid)
                                         fail_cnt += 1
                                 wc.commit(); wc.close()
                                 parts = ["신규 %d건 등록" % success_cnt]
@@ -1755,9 +1853,16 @@ with tab_cattle:
                                 if fail_cnt:
                                     parts.append("오류 %d건" % fail_cnt)
                                 summary = " · ".join(parts)
+                                if not (success_cnt or filled_cnt):
+                                    summary = "새로 추가된 개체가 없습니다. (%s)" % summary
+                                # st.rerun() 이 화면을 지워 버리므로, 오류 사유도 요약에 같이 담아 둔다.
+                                for reason, ids in list(fail_reasons.items())[:3]:
+                                    summary += "\n\n- %s → %d건 (예: %s)" % (
+                                        reason, len(ids), ", ".join(ids[:3])
+                                    )
                                 st.session_state["bulk_upload_msg"] = (
-                                    "ok" if (success_cnt or filled_cnt) else "warn",
-                                    summary if (success_cnt or filled_cnt) else "새로 추가된 개체가 없습니다. (%s)" % summary,
+                                    "ok" if (success_cnt or filled_cnt) and not fail_cnt else "warn",
+                                    summary,
                                 )
                                 st.rerun()
                         except Exception as e:
@@ -1985,16 +2090,7 @@ with tab_cattle:
                 st.dataframe(df_disease, width="stretch", hide_index=True)
     
     with sub_tab3:
-        # 상태별 카운트
-        status_counts = pd.read_sql("SELECT status, COUNT(*) as cnt FROM cattle GROUP BY status", conn)
-        if not status_counts.empty:
-            cols_status = st.columns(len(status_counts))
-            status_colors = {'사육': '🟢', '출하': '🔵', '폐사': '🔴'}
-            for i, (_, row) in enumerate(status_counts.iterrows()):
-                icon = status_colors.get(row['status'], '⚪')
-                cols_status[i].metric(f"{icon} {row['status']}", f"{row['cnt']} 마리")
-        
-        st.markdown("---")
+
         st.subheader("전체 개체 현황 (개체관리대장)")
         
         df_all_cattle = pd.read_sql("""
