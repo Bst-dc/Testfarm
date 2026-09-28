@@ -2348,6 +2348,23 @@ with tab0:
         """, conn)
         df_purchase.insert(0, "삭제", False)
         
+        if "purchase_editor" in st.session_state:
+            edits = st.session_state["purchase_editor"].get("edited_rows", {})
+            for row_idx, changes in edits.items():
+                row_idx = int(row_idx)
+                if row_idx < len(df_purchase):
+                    new_amount = changes.get("총금액", df_purchase.at[row_idx, "총금액"])
+                    new_qty = changes.get("수량", df_purchase.at[row_idx, "수량"])
+                    if pd.notna(new_qty) and float(new_qty) != 0:
+                        df_purchase.at[row_idx, "단가"] = round(float(new_amount) / float(new_qty))
+            
+            added = st.session_state["purchase_editor"].get("added_rows", [])
+            for row in added:
+                amt = row.get("총금액", 0)
+                qty = row.get("수량", 0)
+                if qty and float(qty) != 0:
+                    row["단가"] = round(float(amt) / float(qty))
+        
         edited_purchase_df = st.data_editor(
             df_purchase,
             use_container_width=True,
@@ -2459,6 +2476,22 @@ with tab2:
             ORDER BY u.settlement_month DESC, t.test_name
         """, conn)
         df_usage.insert(0, "삭제", False)
+
+        if "usage_editor" in st.session_state:
+            edits = st.session_state["usage_editor"].get("edited_rows", {})
+            for row_idx, changes in edits.items():
+                row_idx = int(row_idx)
+                if row_idx < len(df_usage):
+                    new_qty = changes.get("사용량", df_usage.at[row_idx, "사용량"])
+                    new_price = changes.get("적용단가", df_usage.at[row_idx, "적용단가"])
+                    if pd.notna(new_qty) and pd.notna(new_price):
+                        df_usage.at[row_idx, "산출총액"] = round(float(new_qty) * float(new_price))
+            
+            added = st.session_state["usage_editor"].get("added_rows", [])
+            for row in added:
+                qty = row.get("사용량", 0)
+                price = row.get("적용단가", 0)
+                row["산출총액"] = round(float(qty) * float(price))
 
         edited_usage_df = st.data_editor(
             df_usage,
