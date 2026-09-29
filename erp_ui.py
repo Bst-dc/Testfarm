@@ -2173,29 +2173,39 @@ with tab_cattle:
         ]
         df_all_cattle = df_all_cattle[cols_order]
 
-        col_f1, col_f2, col_f3 = st.columns([1, 1, 1.5])
+        col_f1, col_f2, col_f3, col_f4 = st.columns([1, 1, 1, 1.5])
         with col_f1:
             unique_groups = [g for g in df_all_cattle['시험군'].unique() if pd.notna(g)]
             filter_group = st.selectbox("📌 시험군 필터", ["(전체 보기)", "(미배정)"] + unique_groups)
         with col_f2:
+            building_vals = set(str(b).strip() for b in df_all_cattle['동'].unique() if pd.notna(b) and str(b).strip() != '')
+            unique_buildings = sorted(building_vals, key=lambda v: (0, int(v.replace("동", ""))) if v.replace("동", "").isdigit() else (1, v))
+            filter_building = st.selectbox("🏢 동 필터", ["(전체 보기)", "(미배정)"] + unique_buildings)
+        with col_f3:
             pen_vals = set(str(p).strip() for p in df_all_cattle['우방'].unique() if pd.notna(p) and str(p).strip() != '')
             unique_pens = sorted(pen_vals, key=lambda v: (0, int(v)) if v.isdigit() else (1, v))
             filter_pen = st.selectbox("🏠 우방 필터", ["(전체 보기)", "(미배정)"] + unique_pens)
-        with col_f3:
+        with col_f4:
             search_cid = st.text_input("🔎 이표번호 검색", placeholder="검색할 이표번호의 일부 또는 전체를 입력하세요...")
-            
+
         if filter_group != "(전체 보기)":
             if filter_group == "(미배정)":
                 df_all_cattle = df_all_cattle[df_all_cattle['시험군'].isna()]
             else:
                 df_all_cattle = df_all_cattle[df_all_cattle['시험군'] == filter_group]
-                
+
+        if filter_building != "(전체 보기)":
+            if filter_building == "(미배정)":
+                df_all_cattle = df_all_cattle[df_all_cattle['동'].isna() | (df_all_cattle['동'] == '')]
+            else:
+                df_all_cattle = df_all_cattle[df_all_cattle['동'].astype(str).str.strip() == filter_building]
+
         if filter_pen != "(전체 보기)":
             if filter_pen == "(미배정)":
                 df_all_cattle = df_all_cattle[df_all_cattle['우방'].isna() | (df_all_cattle['우방'] == '')]
             else:
                 df_all_cattle = df_all_cattle[df_all_cattle['우방'].astype(str).str.strip() == filter_pen]
-                
+
         if search_cid:
             df_all_cattle = df_all_cattle[df_all_cattle['이표번호'].astype(str).str.contains(search_cid)]
             
@@ -2207,7 +2217,62 @@ with tab_cattle:
             if col in df_all_cattle.columns:
                 df_all_cattle[col] = df_all_cattle[col].apply(lambda x: f"{int(x):,}" if pd.notnull(x) and str(x).strip() != '' else "")
             
-        st.dataframe(df_all_cattle, width="stretch", hide_index=True)
+        df_all_cattle.insert(0, "선택", False)
+        disabled_cols = [c for c in df_all_cattle.columns if c != "선택"]
+        edited_all_cattle_df = st.data_editor(
+            df_all_cattle,
+            width="stretch",
+            hide_index=True,
+            disabled=disabled_cols,
+            num_rows="fixed",
+            key="all_cattle_move_editor",
+        )
+
+        selected_move_rows = edited_all_cattle_df[edited_all_cattle_df["선택"]]
+        if not selected_move_rows.empty:
+            st.markdown("---")
+            st.markdown(f"##### 🚚 선택한 {len(selected_move_rows)}마리 우방 이동")
+            groups_for_bulk_move = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master", conn)
+            bulk_move_group_opts = {r['test_name']: r['test_group_code'] for _, r in groups_for_bulk_move.iterrows()}
+
+            with st.form("bulk_pen_move_form", clear_on_submit=False):
+                bm1, bm2 = st.columns(2)
+                with bm1:
+                    bulk_move_b = st.selectbox("새로운 동", [f"{i}동" for i in range(1, farm_b_cnt + 1)])
+                with bm2:
+                    bulk_move_p = st.number_input("새로운 우방", min_value=1, max_value=farm_p_cnt, value=1)
+                bulk_manual_group = st.selectbox(
+                    "수동 시험군 지정 (선택 안 하면 도착 우방의 기존 시험군을 자동으로 따름)",
+                    ["(자동으로 찾기)"] + list(bulk_move_group_opts.keys())
+                )
+                submitted_bulk_move = st.form_submit_button("선택한 개체 이동", type="primary", width="stretch")
+
+                if submitted_bulk_move:
+                    wc = db_connect(DB_FILE)
+                    moving_cids = selected_move_rows['이표번호'].astype(str).tolist()
+                    placeholders = ",".join(["?"] * len(moving_cids))
+
+                    target_gcode = None
+                    if bulk_manual_group != "(자동으로 찾기)":
+                        target_gcode = bulk_move_group_opts[bulk_manual_group]
+                    else:
+                        # 이동할 개체들을 제외한 목적지 우방의 기존 소들 중에서 시험군을 찾음
+                        query = f"SELECT test_group_code FROM cattle WHERE building=? AND pen_number=? AND status='사육' AND test_group_code IS NOT NULL AND cattle_id NOT IN ({placeholders}) LIMIT 1"
+                        dest_row = wc.execute(query, [bulk_move_b, bulk_move_p] + moving_cids).fetchone()
+                        if dest_row:
+                            target_gcode = dest_row[0]
+
+                    for cid in moving_cids:
+                        indiv_gcode = target_gcode
+                        if indiv_gcode is None:
+                            cur_row = wc.execute("SELECT test_group_code FROM cattle WHERE cattle_id=?", (cid,)).fetchone()
+                            if cur_row:
+                                indiv_gcode = cur_row[0]
+                        wc.execute("UPDATE cattle SET building = ?, pen_number = ?, test_group_code = ? WHERE cattle_id = ?", (bulk_move_b, bulk_move_p, indiv_gcode, cid))
+
+                    wc.commit(); wc.close()
+                    st.success(f"개체 {len(moving_cids)}마리 → {bulk_move_b} {bulk_move_p}번 우방으로 이동 완료")
+                    st.rerun()
 
 with tab1:
     col_a, col_b = st.columns(2)
