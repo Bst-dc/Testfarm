@@ -78,199 +78,243 @@ except OSError:
 
 st.set_page_config(page_title="대구축협 시험농장 관리 시스템", layout="wide", page_icon="🐮")
 
-st.markdown(
-    """
-    <style>
-    /* 웹 폰트 적용 (Pretendard) */
-    @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.8/dist/web/static/pretendard.css");
-    html, body, [class*="st-"] {
-        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, 'Helvetica Neue', 'Segoe UI', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif !important;
-    }
-    /* 위 폰트 강제 적용이 Streamlit 내장 아이콘(사이드바 접기 화살표, expander 화살표 등)의
-       전용 아이콘 폰트까지 덮어써서 "keyboard_double_arrow_left" 같은 글자가 그대로 보이는
-       문제를 막기 위해 아이콘 요소는 원래 아이콘 폰트로 되돌린다. */
-    [data-testid="stIconMaterial"] {
-        font-family: "Material Symbols Rounded" !important;
-    }
+APP_CSS = """
+<style>
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
 
-    /* 전체 배경 - 세이지그린 → 더스티블루 대각선 그라데이션 (한우 스마트 컨설팅 스타일) */
-    .stApp {
-        background:
-            radial-gradient(1200px 700px at 0% 0%, rgba(176, 205, 183, 0.9) 0%, rgba(176, 205, 183, 0) 60%),
-            radial-gradient(1000px 800px at 100% 100%, rgba(171, 196, 216, 0.9) 0%, rgba(171, 196, 216, 0) 60%),
-            linear-gradient(135deg, #C6D8C3 0%, #C0D2DF 100%);
-        background-attachment: fixed;
-        color: #2B2B28;
-    }
+:root {
+    --farm-primary: #2E6B57;
+    --farm-primary-dark: #23533F;
+    --farm-accent: #2F5D8A;
+    --farm-bg: #F3F6F4;
+    --farm-card: #FFFFFF;
+    --farm-ink: #1F2A24;
+    --farm-muted: #5F6F66;
+    --farm-line: #D5E0D9;
+    --farm-soft: #EAF2ED;
+    --farm-shadow: 0 1px 2px rgba(20, 40, 30, 0.04), 0 6px 18px rgba(20, 40, 30, 0.06);
+}
 
-    /* 사이드바 배경 - 같은 계열의 반투명 그라데이션 */
-    section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, rgba(166, 198, 174, 0.85) 0%, rgba(160, 186, 210, 0.85) 100%) !important;
-        border-right: 1px solid rgba(255, 255, 255, 0.4);
-    }
-    section[data-testid="stSidebar"] * {
-        color: #2B2B28;
-    }
+html, body, [class*="st-"] {
+    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI',
+        'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif !important;
+}
+/* 위 폰트 강제 적용이 Streamlit 내장 아이콘(사이드바 접기 화살표, expander 화살표 등)의
+   전용 아이콘 폰트까지 덮어써서 "keyboard_double_arrow_left" 같은 글자가 그대로 보이는
+   문제를 막기 위해 아이콘 요소는 원래 아이콘 폰트로 되돌린다. */
+[data-testid="stIconMaterial"] {
+    font-family: "Material Symbols Rounded" !important;
+}
 
-    /* 메트릭 카드 (핵심 지표) 스타일링 - 민트 카드 + 웜톤 그림자 */
-    div[data-testid="metric-container"], div[data-testid="stMetric"] {
-        background-color: #E6EFE3;
-        border: 1px solid #CFDCCB;
-        padding: 20px 24px;
-        border-radius: 14px;
-        box-shadow: 0 4px 6px -1px rgba(60, 55, 40, 0.05), 0 2px 4px -1px rgba(60, 55, 40, 0.03);
-        border-left: 6px solid #5E7F66; /* 세이지그린 포인트 */
-        transition: transform 0.2s ease;
-    }
-    div[data-testid="metric-container"]:hover, div[data-testid="stMetric"]:hover {
-        transform: translateY(-2px);
-    }
-    div[data-testid="metric-container"] > div, div[data-testid="stMetric"] > div {
-        color: #2B2B28; /* 제목 색상 */
-    }
-    div[data-testid="metric-container"] div[data-testid="stMetricValue"],
-    div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
-        font-weight: 800;
-        font-size: 2.2rem;
-        color: #1F2A22;
-    }
+/* ---------- 전체 배경 / 여백 ---------- */
+.stApp {
+    background:
+        radial-gradient(900px 420px at 0% 0%, rgba(46, 107, 87, 0.08) 0%, rgba(46, 107, 87, 0) 70%),
+        radial-gradient(900px 420px at 100% 0%, rgba(47, 93, 138, 0.07) 0%, rgba(47, 93, 138, 0) 70%),
+        var(--farm-bg);
+    color: var(--farm-ink);
+}
+.block-container, [data-testid="stMainBlockContainer"] {
+    padding-top: 3.6rem !important;
+    padding-bottom: 4rem !important;
+    padding-left: 2.5rem !important;
+    padding-right: 2.5rem !important;
+    max-width: 1680px;
+}
+h1, h2, h3, h4, h5 { color: var(--farm-ink); letter-spacing: -0.01em; }
+h2, h3 { font-weight: 800 !important; }
+hr { border-color: var(--farm-line) !important; opacity: 0.8; }
 
-    /* 탭 메뉴(헤더)를 최신 웹앱 버튼형(Pill) 스타일로 변경
-       (예전 BaseWeb 마크업 기준 [data-baseweb="tab"] 셀렉터는 현재 Streamlit 버전에서
-        div[data-testid="stTab"] 로 바뀌어 더 이상 매치되지 않았음 — 실제 DOM 기준으로 수정) */
-    div[data-testid="stTabs"] div[role="tablist"] {
-        gap: 12px;
-        border-bottom: none;
-        padding-bottom: 10px;
-    }
-    div[data-testid="stTab"] {
-        background-color: rgba(255, 255, 255, 0.6) !important;
-        border: 1px solid rgba(255, 255, 255, 0.8) !important;
-        border-radius: 30px !important;
-        padding: 12px 24px !important;
-        box-shadow: 0 2px 4px rgba(60, 55, 40, 0.04);
-        transition: all 0.2s ease;
-    }
-    div[data-testid="stTab"]:hover {
-        background-color: rgba(255, 255, 255, 0.85) !important;
-        border-color: rgba(255, 255, 255, 1) !important;
-    }
-    div[data-testid="stTab"][aria-selected="true"] {
-        background: linear-gradient(135deg, #5E7F66 0%, #4A6F8A 100%) !important;
-        border-color: transparent !important;
-        box-shadow: 0 4px 10px rgba(74, 111, 138, 0.3);
-    }
-    div[data-testid="stTab"][aria-selected="true"] * {
-        color: #FFFFFF !important;
-    }
-    div[data-testid="stTab"] [data-testid="stMarkdownContainer"] p {
-        font-size: 20px !important;
-        font-weight: 700 !important;
-        margin: 0;
-    }
-    /* Streamlit 기본 탭 활성화 시 나타나는 하단 붉은 선(Indicator) 제거
-       (실제 DOM에서는 stTab 안의 .react-aria-SelectionIndicator 요소였음 —
-        stTabIndicator/tab-highlight 셀렉터는 존재하지 않는 이름이라 안 지워지고 있었음) */
-    div[data-testid="stTab"] .react-aria-SelectionIndicator {
-        display: none !important;
-    }
+/* ---------- 사이드바 ---------- */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #FFFFFF 0%, #F1F6F3 100%) !important;
+    border-right: 1px solid var(--farm-line);
+}
+section[data-testid="stSidebar"] * { color: var(--farm-ink); }
 
-    /* 사이드바 라디오 버튼(농장 선택)을 크고 예쁜 글래스 카드로 변경
-       (Streamlit이 라디오를 React Aria 기반으로 바꾸면서 label이 radiogroup의 직계 자식이
-        아니게 되었고, 선택 상태도 data-checked/aria-checked가 아니라 label 자체의
-        data-selected="true" 로 표시됨 — 실제 DOM 기준으로 셀렉터를 다시 작성) */
-    section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"] {
-        padding: 16px 20px !important;
-        background-color: rgba(255, 255, 255, 0.55) !important;
-        border: 2px solid rgba(255, 255, 255, 0.7) !important;
-        border-radius: 12px !important;
-        margin-bottom: 12px !important;
-        cursor: pointer !important;
-        transition: all 0.2s ease !important;
-        box-shadow: 0 1px 3px rgba(60, 55, 40, 0.05) !important;
-    }
-    section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"]:hover {
-        border-color: rgba(255, 255, 255, 1) !important;
-        background-color: rgba(255, 255, 255, 0.75) !important;
-        transform: translateY(-2px) !important;
-        box-shadow: 0 4px 6px rgba(60, 55, 40, 0.1) !important;
-    }
-    section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"][data-selected="true"] {
-        background: linear-gradient(135deg, #5E7F66 0%, #4A6F8A 100%) !important;
-        border-color: transparent !important;
-        box-shadow: 0 4px 10px rgba(74, 111, 138, 0.3) !important;
-    }
-    section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"][data-selected="true"] p {
-        color: #FFFFFF !important;
-    }
-    section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"] p {
-        font-size: 22px !important;
-        font-weight: 800 !important;
-        color: #2B2B28 !important;
-        margin: 0 !important;
-    }
+/* 사이드바 라디오 버튼(농장 선택)을 카드형 메뉴로
+   (React Aria 기반 라디오: label[data-testid="stRadioOption"], 선택 상태는 data-selected="true") */
+section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"] {
+    padding: 14px 18px !important;
+    background-color: #FFFFFF !important;
+    border: 1px solid var(--farm-line) !important;
+    border-radius: 12px !important;
+    margin-bottom: 10px !important;
+    cursor: pointer !important;
+    transition: all 0.15s ease !important;
+    box-shadow: 0 1px 2px rgba(20, 40, 30, 0.04) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"]:hover {
+    border-color: var(--farm-primary) !important;
+    background-color: var(--farm-soft) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"][data-selected="true"] {
+    background: linear-gradient(135deg, var(--farm-primary) 0%, var(--farm-accent) 100%) !important;
+    border-color: transparent !important;
+    box-shadow: 0 6px 14px rgba(46, 107, 87, 0.28) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"][data-selected="true"] p {
+    color: #FFFFFF !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"] p {
+    font-size: 19px !important;
+    font-weight: 800 !important;
+    margin: 0 !important;
+}
+/* 라디오 동그라미 숨기기 (텍스트만 돋보이게) */
+section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"] > div > div:first-child {
+    display: none !important;
+}
+section[data-testid="stSidebar"] div[data-testid="stWidgetLabel"] p {
+    font-size: 15px !important;
+    font-weight: 800 !important;
+    color: var(--farm-muted) !important;
+    padding-bottom: 6px !important;
+}
 
-    /* 라디오 버튼의 동그라미 숨기기 (텍스트만 돋보이게) */
-    section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"] > div > div:first-child {
-        display: none !important;
-    }
+/* ---------- 핵심 지표 카드 ---------- */
+div[data-testid="stMetric"] {
+    background: var(--farm-card);
+    border: 1px solid var(--farm-line);
+    border-top: 4px solid var(--farm-primary);
+    border-radius: 14px;
+    padding: 16px 20px !important;
+    box-shadow: var(--farm-shadow);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+div[data-testid="stMetric"]:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 24px rgba(20, 40, 30, 0.10);
+}
+div[data-testid="stMetric"] label, div[data-testid="stMetricLabel"] p {
+    color: var(--farm-muted) !important;
+    font-weight: 700 !important;
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+}
+div[data-testid="stMetricValue"] {
+    font-size: 1.75rem !important;
+    font-weight: 800 !important;
+    color: var(--farm-ink) !important;
+    font-variant-numeric: tabular-nums;
+}
+div[data-testid="stMetricValue"] > div {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+}
 
-    /* 사이드바 라디오 버튼 제목(위젯 라벨) 크기 키우기 */
-    section[data-testid="stSidebar"] div[data-testid="stWidgetLabel"] p {
-        font-size: 26px !important;
-        font-weight: 900 !important;
-        color: #1F2A22 !important;
-        padding-bottom: 10px !important;
-    }
+/* ---------- 탭 (Pill 형) ---------- */
+div[data-testid="stTabs"] div[role="tablist"] {
+    gap: 8px;
+    border-bottom: none;
+    padding-bottom: 8px;
+    flex-wrap: wrap;
+}
+div[data-testid="stTab"] {
+    background-color: #FFFFFF !important;
+    border: 1px solid var(--farm-line) !important;
+    border-radius: 999px !important;
+    padding: 9px 20px !important;
+    box-shadow: 0 1px 2px rgba(20, 40, 30, 0.04);
+    transition: all 0.15s ease;
+}
+div[data-testid="stTab"]:hover {
+    border-color: var(--farm-primary) !important;
+    background-color: var(--farm-soft) !important;
+}
+div[data-testid="stTab"][aria-selected="true"] {
+    background: linear-gradient(135deg, var(--farm-primary) 0%, var(--farm-accent) 100%) !important;
+    border-color: transparent !important;
+    box-shadow: 0 4px 12px rgba(46, 107, 87, 0.28);
+}
+div[data-testid="stTab"][aria-selected="true"] * { color: #FFFFFF !important; }
+div[data-testid="stTab"] [data-testid="stMarkdownContainer"] p {
+    font-size: 16px !important;
+    font-weight: 700 !important;
+    margin: 0;
+}
+/* 탭 활성화 시 기본 하단 표시선 제거 (실제 DOM: stTab 안의 .react-aria-SelectionIndicator) */
+div[data-testid="stTab"] .react-aria-SelectionIndicator { display: none !important; }
 
-    /* 표(Dataframe) 디자인 깔끔하게 */
-    div[data-testid="stDataFrame"] {
-        border: 1px solid #CFDCCB;
-        border-radius: 12px;
-        overflow: hidden;
-        box-shadow: 0 2px 4px rgba(60, 55, 40, 0.03);
-    }
+/* ---------- 버튼: 주요 액션(primary) / 보조(secondary) 위계 ---------- */
+button[data-testid^="stBaseButton-primary"] {
+    background: linear-gradient(135deg, var(--farm-primary) 0%, var(--farm-accent) 100%) !important;
+    color: #FFFFFF !important;
+    border: none !important;
+    font-weight: 700 !important;
+    box-shadow: 0 4px 12px rgba(46, 107, 87, 0.25) !important;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+button[data-testid^="stBaseButton-primary"]:hover {
+    transform: translateY(-1px);
+    filter: brightness(1.06);
+    box-shadow: 0 8px 18px rgba(46, 107, 87, 0.30) !important;
+}
+button[data-testid^="stBaseButton-primary"] p { color: #FFFFFF !important; }
+button[data-testid^="stBaseButton-secondary"] {
+    background: #FFFFFF !important;
+    color: var(--farm-ink) !important;
+    border: 1px solid #C5D3CB !important;
+    font-weight: 600 !important;
+    transition: all 0.12s ease;
+}
+button[data-testid^="stBaseButton-secondary"]:hover {
+    border-color: var(--farm-primary) !important;
+    background: var(--farm-soft) !important;
+    color: var(--farm-primary-dark) !important;
+}
 
-    /* 버튼 - 세이지그린 → 스틸블루 그라데이션
-       (앱의 등록/수정/삭제 버튼은 대부분 st.form_submit_button 이라 stFormSubmitButton
-        래퍼를 쓰는데, 기존 셀렉터에 빠져 있어서 대부분의 버튼이 기본 빨간색으로 남아 있었음) */
-    .stButton > button, .stDownloadButton > button,
-    div[data-testid="stFormSubmitButton"] > button {
-        border-radius: 10px !important;
-        border: none !important;
-        background: linear-gradient(135deg, #5E7F66 0%, #4A6F8A 100%) !important;
-        color: #FFFFFF !important;
-        font-weight: 700 !important;
-        box-shadow: 0 2px 6px rgba(74, 111, 138, 0.25);
-        transition: transform 0.15s ease;
-    }
-    .stButton > button:hover, .stDownloadButton > button:hover,
-    div[data-testid="stFormSubmitButton"] > button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 4px 10px rgba(74, 111, 138, 0.3);
-    }
+/* ---------- 입력창 ---------- */
+div[data-testid="stSelectbox"] div[role="group"],
+div[data-testid="stMultiSelect"] div[role="group"],
+.stTextInput input, .stNumberInput input, .stDateInput input, .stTextArea textarea {
+    background-color: #FFFFFF !important;
+    border-radius: 10px !important;
+}
 
-    /* 입력창/선택창 - 반투명 글래스 톤
-       (셀렉트박스/멀티셀렉트도 BaseWeb에서 React Aria로 바뀌어 data-baseweb="select"가
-        더 이상 없음 — 실제 래퍼는 stSelectbox/stMultiSelect 안의 role="group" 요소) */
-    div[data-testid="stSelectbox"] div[role="group"],
-    div[data-testid="stMultiSelect"] div[role="group"],
-    .stTextInput input, .stNumberInput input, .stDateInput input {
-        background-color: rgba(255, 255, 255, 0.75) !important;
-        border-color: #CFDCCB !important;
-        border-radius: 10px !important;
-    }
+/* ---------- 카드형 폼 / expander ---------- */
+div[data-testid="stForm"] {
+    background: var(--farm-card);
+    border: 1px solid var(--farm-line) !important;
+    border-radius: 16px !important;
+    box-shadow: var(--farm-shadow);
+    padding: 20px 22px !important;
+}
+div[data-testid="stExpander"] details {
+    background: var(--farm-card);
+    border: 1px solid var(--farm-line) !important;
+    border-radius: 14px !important;
+    box-shadow: 0 1px 2px rgba(20, 40, 30, 0.04);
+}
+div[data-testid="stExpander"] summary p { font-weight: 700; }
 
-    /* expander도 카드 톤으로 통일 */
-    div[data-testid="stExpander"] {
-        background-color: rgba(255, 255, 255, 0.55);
-        border: 1px solid rgba(255, 255, 255, 0.7);
-        border-radius: 12px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+/* ---------- 표 ---------- */
+div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
+    border: 1px solid var(--farm-line);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(20, 40, 30, 0.04);
+    background: #FFFFFF;
+}
+
+/* ---------- 알림 ---------- */
+div[data-testid="stAlert"] > div { border-radius: 12px !important; }
+</style>
+"""
+st.markdown(APP_CSS, unsafe_allow_html=True)
+
+
+def notify(message, icon="✅"):
+    """st.rerun() 은 화면을 곧바로 다시 그려서 직전의 st.success 가 사용자에게 보이지 않는다.
+    다음 실행에서 토스트로 띄우도록 세션에 쌓아 둔다."""
+    st.session_state.setdefault("_pending_toasts", []).append((message, icon))
+
+
+def show_pending_toasts():
+    for message, icon in st.session_state.pop("_pending_toasts", []):
+        st.toast(message, icon=icon)
 import json
 
 # ========== 농장 설정 ==========
@@ -497,6 +541,7 @@ def migrate_schema(db_file):
                 pass
         _migrate_cattle_default_check(conn)
         _repair_dangling_cattle_refs(conn)
+        _repair_numpy_int_blobs(conn)
         conn.commit()
     finally:
         conn.close()
@@ -553,6 +598,37 @@ def _migrate_cattle_default_check(conn):
     conn.execute(f"INSERT INTO cattle ({col_list}) SELECT {col_list} FROM cattle_old_migration")
     conn.execute("DROP TABLE cattle_old_migration")
     conn.execute("PRAGMA legacy_alter_table = OFF")
+
+
+NUMERIC_COLUMNS = {
+    "cattle": ["pen_number", "calf_price", "commission_fee", "transport_fee", "initial_cost",
+               "insurance_value", "insurance_premium", "insurance_claim"],
+    "item_master": ["current_stock", "moving_avg_price"],
+    "purchase": ["quantity", "total_amount"],
+    "monthly_usage": ["total_usage", "applied_price", "calculated_amount"],
+    "monthly_fixedcost": ["total_billed_amount"],
+    "cattle_cost_log": ["allocated_variable_cost", "allocated_fixed_cost"],
+    "cattle_item_usage_log": ["allocated_usage", "allocated_amount"],
+}
+
+
+def _repair_numpy_int_blobs(conn):
+    """pandas 에서 읽은 numpy.int64 를 그대로 INSERT 하면 sqlite3 가 숫자가 아닌 8바이트 BLOB 으로
+    저장한다 (예: 적용단가 583 → b'G\\x02\\x00...'). 이런 값은 합계 계산에서 빠지고 화면 표에서도
+    오류를 내므로, 원래 정수로 되돌린다."""
+    for table, columns in NUMERIC_COLUMNS.items():
+        for col in columns:
+            try:
+                rows = conn.execute(
+                    f"SELECT rowid, {col} FROM {table} WHERE typeof({col}) = 'blob' AND length({col}) = 8"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                continue
+            for rowid, raw in rows:
+                conn.execute(
+                    f"UPDATE {table} SET {col} = ? WHERE rowid = ?",
+                    (int.from_bytes(raw, "little", signed=True), rowid),
+                )
 
 
 def _table_ddl(table):
@@ -1450,6 +1526,7 @@ def generate_overall_report_html(df_all, farm_order, farm_colors):
 
 # 이전 실행(rerun)에서 닫히지 않은 연결부터 정리한다. -> "database is locked" 방지
 close_stale_connections()
+show_pending_toasts()
 
 # 외부에서 접속 가능한 환경이면 비밀번호를 먼저 확인한다.
 require_password()
@@ -1481,7 +1558,7 @@ with st.sidebar.expander("➕ 새 농장 추가"):
         new_farm_color = st.color_picker("테마 색상", "#3B82F6")
         new_farm_b = st.number_input("동 개수 (예: 6)", min_value=1, max_value=20, value=6)
         new_farm_p = st.number_input("동별 우방 개수 (예: 20)", min_value=1, max_value=100, value=20)
-        if st.form_submit_button("추가"):
+        if st.form_submit_button("농장 추가", type="primary", width="stretch"):
             if new_farm_name:
                 if new_farm_name in FARM_CONFIG:
                     st.error("이미 존재하는 농장입니다.")
@@ -1496,8 +1573,10 @@ with st.sidebar.expander("➕ 새 농장 추가"):
                         "pens_count": new_farm_p
                     }
                     save_farms(FARM_CONFIG)
-                    st.success(f"'{new_farm_name}' 농장이 추가되었습니다!")
+                    notify(f"'{new_farm_name}' 농장이 추가되었습니다!", icon="✅")
                     st.rerun()
+            else:
+                st.warning("농장 이름을 입력하세요.")
 
 
 def cattle_reset_preview(db_file):
@@ -1574,16 +1653,19 @@ st.sidebar.markdown("---")
 if selected_farm == "시험농장 전체 현황":
     st.markdown(
         f"""
-        <div style="display:flex; align-items:center; gap:14px; margin-bottom:0.5rem;">
+        <div style="display:flex; align-items:center; gap:14px; margin-bottom:0.4rem;">
             <img src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 44px;">
-            <h1 style="margin:0;">대구축협 시험농장 관리 시스템</h1>
+            <div>
+                <h1 style="margin:0; padding:0; font-size:1.9rem;">대구축협 시험농장 관리 시스템</h1>
+                <div style="color:#5F6F66; font-size:0.95rem; margin-top:2px;">
+                    등록된 모든 농장의 개체 현황을 한눈에 보는 통합 대시보드
+                </div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.markdown("데이터베이스 트리거에 의한 **단가 자동 갱신** 및 Pandas를 이용한 **월말 1/n 비용 분배**를 시각적으로 확인하는 대시보드입니다.")
     st.subheader("🌐 농장 통합 대시보드")
-    st.caption("등록된 모든 관리 농장(선산, 고아 등)의 개체 현황을 통합하여 보여줍니다.")
     
     all_cattle_dfs = []
     
@@ -1608,79 +1690,90 @@ if selected_farm == "시험농장 전체 현황":
         shipped_cattle = len(df_all[df_all['상태'] == '출하'])
         total_initial_cost = int(df_all['초기원가'].sum(skipna=True)) if '초기원가' in df_all.columns else 0
         
+        def _share(part):
+            return f"{part / total_admission * 100:.1f}%" if total_admission else "0.0%"
+
         m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("전체 누적 입식", f"{total_admission}두")
-        m2.metric("현재 사육중", f"{current_breeding}두")
-        m3.metric("누적 폐사", f"{dead_cattle}두")
-        m4.metric("누적 출하", f"{shipped_cattle}두")
-        m5.metric("총 구입비용", f"{total_initial_cost // 10000:,}만원")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        
+        m1.metric("전체 누적 입식", f"{total_admission:,}두",
+                  delta=f"{len(all_cattle_dfs)}개 농장 합계", delta_color="off", delta_arrow="off")
+        m2.metric("현재 사육중", f"{current_breeding:,}두",
+                  delta=f"전체의 {_share(current_breeding)}", delta_color="off", delta_arrow="off")
+        m3.metric("누적 폐사", f"{dead_cattle:,}두",
+                  delta=f"폐사율 {_share(dead_cattle)}", delta_color="inverse" if dead_cattle else "off",
+                  delta_arrow="off")
+        m4.metric("누적 출하", f"{shipped_cattle:,}두",
+                  delta=f"출하율 {_share(shipped_cattle)}", delta_color="off", delta_arrow="off")
+        m5.metric("총 구입비용", f"{total_initial_cost // 10000:,}만원",
+                  delta="송아지 구입비 합계", delta_color="off", delta_arrow="off")
+
+        st.write("")
+
+        count_col = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="center")
+        money_col = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right")
+
         st.markdown("##### 🏢 농장별 요약 현황")
         farm_summary = df_all.groupby('농장명').agg(
             전체입식=('개체번호', 'count'),
-            사육중=('상태', lambda x: (x == '사육').sum()),
-            출하=('상태', lambda x: (x == '출하').sum()),
-            폐사=('상태', lambda x: (x == '폐사').sum()),
-            총구입비용_만원=('초기원가', lambda x: int(x.sum(skipna=True)) // 10000 if '초기원가' in df_all.columns else 0),
-            평균구입금액_만원=('초기원가', lambda x: int(x.mean(skipna=True)) // 10000 if '초기원가' in df_all.columns and not x.isna().all() else 0)
+            사육중=('상태', lambda x: int((x == '사육').sum())),
+            출하=('상태', lambda x: int((x == '출하').sum())),
+            폐사=('상태', lambda x: int((x == '폐사').sum())),
+            총구입비용_만원=('초기원가', lambda x: int(x.sum(skipna=True)) // 10000),
+            평균구입금액_만원=('초기원가', lambda x: int(x.mean(skipna=True)) // 10000 if not x.isna().all() else 0)
         ).reset_index()
-        
-        farm_summary.rename(columns={
-            '전체입식': '전체 입식 (두)', 
-            '사육중': '현재 사육중 (두)', 
-            '출하': '누적 출하 (두)', 
-            '폐사': '누적 폐사 (두)', 
-            '총구입비용_만원': '총 구입비용 (만원)',
-            '평균구입금액_만원': '두당 평균구입금액 (만원)'
-        }, inplace=True)
-        
-        for col in ['전체 입식 (두)', '현재 사육중 (두)', '누적 출하 (두)', '누적 폐사 (두)', '총 구입비용 (만원)', '두당 평균구입금액 (만원)']:
-            farm_summary[col] = farm_summary[col].apply(lambda x: f"{int(x):,}")
-            
         st.dataframe(
-            farm_summary.style.set_properties(**{'text-align': 'center'})
-            .set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}]),
-            width="stretch", hide_index=True
+            farm_summary,
+            width="stretch", hide_index=True,
+            column_config={
+                "농장명": st.column_config.TextColumn("농장명"),
+                "전체입식": count_col("전체 입식 (두)"),
+                "사육중": count_col("현재 사육중 (두)"),
+                "출하": count_col("누적 출하 (두)"),
+                "폐사": count_col("누적 폐사 (두)"),
+                "총구입비용_만원": money_col("총 구입비용 (만원)"),
+                "평균구입금액_만원": money_col("두당 평균 (만원)"),
+            },
         )
-        st.markdown("<br>", unsafe_allow_html=True)
-        
+        st.write("")
+
         st.markdown("##### 🏪 농장별 우시장 구입 현황")
         df_market = df_all[df_all['우시장'].notna() & (df_all['우시장'].astype(str).str.strip() != '')]
         if not df_market.empty:
             market_summary = df_market.groupby(['농장명', '우시장']).agg(
                 구입마릿수=('개체번호', 'count'),
-                총구입비용_만원=('초기원가', lambda x: int(x.sum(skipna=True)) // 10000 if '초기원가' in df_market.columns else 0),
-                평균구입비용_만원=('초기원가', lambda x: int(x.mean(skipna=True)) // 10000 if '초기원가' in df_market.columns and not x.isna().all() else 0)
+                총구입비용_만원=('초기원가', lambda x: int(x.sum(skipna=True)) // 10000),
+                평균구입비용_만원=('초기원가', lambda x: int(x.mean(skipna=True)) // 10000 if not x.isna().all() else 0)
             ).reset_index()
-            
-            market_summary.rename(columns={
-                '구입마릿수': '구입 마릿수 (두)',
-                '총구입비용_만원': '총 구입비용 (만원)',
-                '평균구입비용_만원': '두당 평균 (만원)'
-            }, inplace=True)
-            
-            for col in ['구입 마릿수 (두)', '총 구입비용 (만원)', '두당 평균 (만원)']:
-                market_summary[col] = market_summary[col].apply(lambda x: f"{int(x):,}")
-                
             st.dataframe(
-                market_summary.style.set_properties(**{'text-align': 'center'})
-                .set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}]),
-                width="stretch", hide_index=True
+                market_summary,
+                width="stretch", hide_index=True,
+                column_config={
+                    "구입마릿수": count_col("구입 마릿수 (두)"),
+                    "총구입비용_만원": money_col("총 구입비용 (만원)"),
+                    "평균구입비용_만원": money_col("두당 평균 (만원)"),
+                },
             )
         else:
             st.info("등록된 우시장 구입 이력이 없습니다.")
-            
-        st.markdown("<br>", unsafe_allow_html=True)
+
+        st.write("")
                 
         with st.expander("통합 데이터 상세 표"):
-            df_all.insert(0, '순번', range(1, len(df_all) + 1))
+            df_detail = df_all.copy()
+            df_detail.insert(0, '순번', range(1, len(df_detail) + 1))
+            for col in ['입식일', '거세일', '종결일']:
+                df_detail[col] = pd.to_datetime(df_detail[col], errors='coerce')
+            df_detail['상태'] = df_detail['상태'].map({'사육': '🟢 사육', '출하': '🔵 출하', '폐사': '🔴 폐사'}).fillna(df_detail['상태'])
             st.dataframe(
-                df_all, 
-                width="stretch", 
+                df_detail,
+                width="stretch",
                 hide_index=True,
-                column_config={"순번": st.column_config.NumberColumn(width=60)}
+                column_config={
+                    "순번": st.column_config.NumberColumn(width=60),
+                    "입식일": st.column_config.DateColumn(format="YYYY-MM-DD"),
+                    "거세일": st.column_config.DateColumn(format="YYYY-MM-DD"),
+                    "종결일": st.column_config.DateColumn(format="YYYY-MM-DD"),
+                    "초기원가": money_col("구입비용 (원)"),
+                },
             )
             
         st.markdown("---")
@@ -1759,7 +1852,7 @@ with st.sidebar.expander("백업 파일로 복원"):
     if restore_file is not None and st.button("이 파일로 덮어쓰기", width="stretch"):
         ok, msg = restore_db(DB_FILE, restore_file.getvalue())
         if ok:
-            st.success(msg)
+            notify(msg, icon="✅")
             st.rerun()
         else:
             st.error(msg)
@@ -1857,33 +1950,43 @@ st.sidebar.caption("저장 위치: %s" % DB_DIR)
 # 타이틀 (선택된 농장 표시)
 st.markdown(
     f"""
-    <div style="display:flex; align-items:center; gap:16px; margin-bottom:4px;">
-        <div style="background:{farm_color}; color:white; padding:6px 18px; border-radius:8px; font-weight:800; font-size:0.95rem; letter-spacing:1px;">
-            {selected_farm}
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:0.4rem;">
+        <div style="display:flex; align-items:center; gap:14px;">
+            <img src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 44px;">
+            <div>
+                <h1 style="margin:0; padding:0; font-size:1.9rem;">대구축협 시험농장 관리 시스템</h1>
+                <div style="color:#5F6F66; font-size:0.95rem; margin-top:2px;">
+                    개체 입식 · 사육 현황 · 품목 매입 · 월말 원가 정산(사육일수 비례 배분)
+                </div>
+            </div>
+        </div>
+        <div style="background:{html.escape(farm_color)}; color:white; padding:8px 20px; border-radius:999px;
+                    font-weight:800; font-size:1rem; box-shadow:0 4px 12px rgba(0,0,0,0.12);">
+            {html.escape(selected_farm)}
         </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
-st.markdown(
-    f"""
-    <div style="display:flex; align-items:center; gap:14px; margin-bottom:0.5rem;">
-        <img src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 44px;">
-        <h1 style="margin:0;">대구축협 시험농장 관리 시스템</h1>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-st.markdown("데이터베이스 트리거에 의한 **단가 자동 갱신** 및 Pandas를 이용한 **월말 1/n 비용 분배**를 시각적으로 확인하는 대시보드입니다.")
 
 conn = db_connect(DB_FILE)
 
 # KPI Metrics 표시
-col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+status_counts = dict(conn.execute("SELECT status, COUNT(*) FROM cattle GROUP BY status").fetchall())
+total_admitted = sum(status_counts.values())
+current_raising = status_counts.get('사육', 0)
+dead_count = status_counts.get('폐사', 0)
+shipped_count = status_counts.get('출하', 0)
 
-total_admitted = pd.read_sql("SELECT COUNT(*) as cnt FROM cattle", conn).iloc[0]['cnt']
-current_raising = pd.read_sql("SELECT COUNT(*) as cnt FROM cattle WHERE status='사육'", conn).iloc[0]['cnt']
-dead_count = pd.read_sql("SELECT COUNT(*) as cnt FROM cattle WHERE status='폐사'", conn).iloc[0]['cnt']
+this_month = datetime.now().strftime('%Y-%m')
+month_admit_cnt, month_calf_cost = conn.execute(
+    "SELECT COUNT(*), COALESCE(SUM(initial_cost), 0) FROM cattle WHERE substr(admission_date, 1, 7) = ?",
+    (this_month,),
+).fetchone()
+month_purchase_amt = conn.execute(
+    "SELECT COALESCE(SUM(total_amount), 0) FROM purchase WHERE substr(purchase_date, 1, 7) = ?",
+    (this_month,),
+).fetchone()[0]
 
 # 평균 개월령 계산 (사육 중인 개체 대상)
 active_cattle_dates = pd.read_sql("SELECT birth_date FROM cattle WHERE status='사육' AND birth_date IS NOT NULL AND birth_date != ''", conn)
@@ -1918,11 +2021,24 @@ if not active_cattle_dates.empty:
         avg_d = int(avg_days % 30.436875)
         avg_months_str = f"{avg_m}개월 {avg_d}일"
 
-col_m1.metric("입식 두수", f"{total_admitted} 마리")
-col_m2.metric("사육 두수", f"{current_raising} 마리")
-col_m3.metric("폐사 두수", f"{dead_count} 마리")
-col_m4.metric("평균 개월령", avg_months_str)
-st.markdown("---")
+def _rate(part):
+    return f"{part / total_admitted * 100:.1f}%" if total_admitted else "0.0%"
+
+kpi_cols = st.columns(6)
+kpi_cols[0].metric("현재 사육 두수", f"{current_raising:,}두",
+                   delta=f"전체 입식 {total_admitted:,}두", delta_color="off", delta_arrow="off")
+kpi_cols[1].metric("누적 출하", f"{shipped_count:,}두",
+                   delta=f"출하율 {_rate(shipped_count)}", delta_color="off", delta_arrow="off")
+kpi_cols[2].metric("누적 폐사", f"{dead_count:,}두",
+                   delta=f"폐사율 {_rate(dead_count)}", delta_color="inverse" if dead_count else "off",
+                   delta_arrow="off")
+kpi_cols[3].metric(f"{datetime.now().month}월 송아지 구입비", f"{int(month_calf_cost) // 10000:,}만원",
+                   delta=f"이달 {month_admit_cnt:,}두 입식", delta_color="off", delta_arrow="off")
+kpi_cols[4].metric(f"{datetime.now().month}월 품목 매입액", f"{int(month_purchase_amt) // 10000:,}만원",
+                   delta="사료·약품 등 입고", delta_color="off", delta_arrow="off")
+kpi_cols[5].metric("평균 개월령", avg_months_str,
+                   delta="사육중 개체 기준", delta_color="off", delta_arrow="off")
+st.write("")
 
 tab_cattle, tab1, tab0, tab2, tab_report, tab_slaughter = st.tabs(["🐄 개체 관리", "📊 사육 및 재고 현황", "📦 품목·매입 관리", "💰 월말 정산 및 청구 내역", "🧾 결산 리포트", "🥩 도축 성적"])
 
@@ -1969,7 +2085,7 @@ with tab_cattle:
                             # 코드를 입력받지 않고 명칭을 코드로 동일하게 사용
                             wc.execute("INSERT INTO testgroup_master (test_group_code, test_name, start_date, location_mapping) VALUES (?, ?, ?, ?)", (new_group_name, new_group_name, new_group_start.isoformat(), loc_map))
                             wc.commit(); wc.close()
-                            st.success(f"시험군 '{new_group_name}' 등록 완료")
+                            notify(f"시험군 '{new_group_name}' 등록 완료", icon="✅")
                             st.rerun()
                         except sqlite3.IntegrityError:
                             wc.rollback(); wc.close()
@@ -2051,7 +2167,7 @@ with tab_cattle:
                             wc = db_connect(DB_FILE)
                             wc.execute("UPDATE testgroup_master SET test_name = ?, start_date = ? WHERE test_group_code = ?", (edit_name, edit_start.isoformat(), target_code))
                             wc.commit(); wc.close()
-                            st.success("시험군 수정 완료")
+                            notify("시험군 수정 완료", icon="✅")
                             st.rerun()
                         else:
                             st.warning("새 시험명칭을 입력하세요.")
@@ -2066,7 +2182,7 @@ with tab_cattle:
                         else:
                             wc.execute("DELETE FROM testgroup_master WHERE test_group_code = ?", (target_code,))
                             wc.commit(); wc.close()
-                            st.success(f"시험군 '{target_code}' 삭제 완료")
+                            notify(f"시험군 '{target_code}' 삭제 완료", icon="✅")
                             st.rerun()
                 st.caption("기존 개체를 다른 시험군으로 옮기려면 '상태 변경 / 질병 기록' 탭의 '개체 위치 및 시험군 이동'을 이용하세요.")
 
@@ -2156,7 +2272,7 @@ with tab_cattle:
                             # 버튼 넓이를 절반으로 줄이기 위해 컬럼 사용
                             btn_b1, btn_b2 = st.columns(2)
                             with btn_b1:
-                                do_bulk_upload = st.button("개체 일괄등록", type="primary", use_container_width=True)
+                                do_bulk_upload = st.button("개체 일괄등록", type="primary", width="stretch")
 
                             if do_bulk_upload:
                                 wc = db_connect(DB_FILE)
@@ -2391,7 +2507,7 @@ with tab_cattle:
                                     (new_cattle_id, new_kpn, new_birth_date.isoformat(), sel_group_code, new_admission_date.isoformat(), new_market, new_building, new_pen, new_feed_type, new_roughage, new_castration.isoformat(), new_calf_price, new_commission, new_transport, total_init_cost, new_ins_value, new_ins_premium)
                                 )
                                 wc.commit(); wc.close()
-                                st.success(f"개체 '{new_cattle_id}' 입식 등록 완료! (구입비용합계: {total_init_cost:,}원)")
+                                notify(f"개체 '{new_cattle_id}' 입식 등록 완료! (구입비용합계: {total_init_cost:,}원)", icon="✅")
                                 st.rerun()
                             except sqlite3.IntegrityError:
                                 wc.rollback(); wc.close()
@@ -2443,7 +2559,7 @@ with tab_cattle:
                             wc = db_connect(DB_FILE)
                             wc.execute("UPDATE cattle SET status = ?, closure_date = ? WHERE cattle_id = ?", (new_status, closure_date.isoformat(), target_id))
                             wc.commit(); wc.close()
-                            st.success(f"개체 '{target_id}' → '{new_status}' 변경 완료")
+                            notify(f"개체 '{target_id}' → '{new_status}' 변경 완료", icon="✅")
                             st.rerun()
                     
                     st.markdown("---")
@@ -2497,7 +2613,7 @@ with tab_cattle:
                                 
                                 wc.commit(); wc.close()
                                 
-                                st.success(f"개체 {len(moving_cids)}마리 → {move_b} {move_p}번 우방으로 이동 완료")
+                                notify(f"개체 {len(moving_cids)}마리 → {move_b} {move_p}번 우방으로 이동 완료", icon="✅")
                                 st.rerun()
         
         with col_dis:
@@ -2530,7 +2646,7 @@ with tab_cattle:
                             (dis_cattle, dis_date.isoformat(), dis_symptom, dis_med1, dis_dose1, dis_med2, dis_dose2, dis_vet, dis_rx)
                         )
                         wc.commit(); wc.close()
-                        st.success("질병 기록 등록 완료")
+                        notify("질병 기록 등록 완료", icon="✅")
                         st.rerun()
             
             st.markdown("---")
@@ -2544,7 +2660,17 @@ with tab_cattle:
             if df_disease.empty:
                 st.info("등록된 질병 기록이 없습니다.")
             else:
-                st.dataframe(df_disease, width="stretch", hide_index=True)
+                for col in ['발병일', '완치일']:
+                    df_disease[col] = pd.to_datetime(df_disease[col], errors='coerce')
+                st.dataframe(
+                    df_disease, width="stretch", hide_index=True,
+                    column_config={
+                        "ID": st.column_config.NumberColumn(width="small"),
+                        "발병일": st.column_config.DateColumn(format="YYYY-MM-DD"),
+                        "완치일": st.column_config.DateColumn(format="YYYY-MM-DD"),
+                        "수량(ml)": st.column_config.NumberColumn(format="localized", alignment="right"),
+                    },
+                )
     
     with sub_tab3:
 
@@ -2643,16 +2769,29 @@ with tab_cattle:
         if search_cid:
             df_all_cattle = df_all_cattle[df_all_cattle['이표번호'].astype(str).str.contains(search_cid)]
             
-        st.markdown(f"**총 {len(df_all_cattle)}건**")
-            
-        # 금액 관련 컬럼 천단위 콤마 표시
+        status_badge = {'사육': '🟢 사육', '출하': '🔵 출하', '폐사': '🔴 폐사'}
+        cnt_by_status = df_all_cattle['상태'].value_counts()
+        st.markdown(
+            f"**총 {len(df_all_cattle):,}건** &nbsp;·&nbsp; "
+            + " &nbsp; ".join(f"{status_badge[s]} {int(cnt_by_status.get(s, 0)):,}두" for s in ('사육', '출하', '폐사'))
+        )
+
+        # 날짜는 달력 형식, 금액은 숫자형으로 두고 표시 형식만 column_config 로 지정한다.
+        for col in ['생년월일', '입식일', '거세일', '종결일']:
+            df_all_cattle[col] = pd.to_datetime(df_all_cattle[col], errors='coerce')
         money_cols = ['구입금액', '수수료', '운송료', '구입비용합계', '보험가입금액', '보험료']
         for col in money_cols:
-            if col in df_all_cattle.columns:
-                df_all_cattle[col] = df_all_cattle[col].apply(lambda x: f"{int(x):,}" if pd.notnull(x) and str(x).strip() != '' else "")
-            
+            df_all_cattle[col] = pd.to_numeric(df_all_cattle[col], errors='coerce')
+        df_all_cattle['우방'] = pd.to_numeric(df_all_cattle['우방'], errors='coerce')
+        df_all_cattle['상태'] = df_all_cattle['상태'].map(lambda s: status_badge.get(s, s))
+
         df_all_cattle.insert(0, "선택", False)
         disabled_cols = [c for c in df_all_cattle.columns if c != "선택"]
+        date_cfg = {c: st.column_config.DateColumn(c, format="YYYY-MM-DD") for c in ['생년월일', '입식일', '거세일', '종결일']}
+        money_cfg = {
+            c: st.column_config.NumberColumn(f"{c} (원)", format="localized", alignment="right")
+            for c in money_cols
+        }
         edited_all_cattle_df = st.data_editor(
             df_all_cattle,
             width="stretch",
@@ -2660,6 +2799,16 @@ with tab_cattle:
             disabled=disabled_cols,
             num_rows="fixed",
             key="all_cattle_move_editor",
+            column_config={
+                "선택": st.column_config.CheckboxColumn("선택", width="small", pinned=True,
+                                                       help="체크한 개체를 아래에서 다른 우방으로 이동할 수 있습니다."),
+                "이표번호": st.column_config.TextColumn("이표번호", pinned=True),
+                "상태": st.column_config.TextColumn("상태", width="small"),
+                "우방": st.column_config.NumberColumn("우방", format="%d", alignment="center"),
+                "동": st.column_config.TextColumn("동", alignment="center"),
+                **date_cfg,
+                **money_cfg,
+            },
         )
 
         selected_move_rows = edited_all_cattle_df[edited_all_cattle_df["선택"]]
@@ -2705,7 +2854,7 @@ with tab_cattle:
                         wc.execute("UPDATE cattle SET building = ?, pen_number = ?, test_group_code = ? WHERE cattle_id = ?", (bulk_move_b, bulk_move_p, indiv_gcode, cid))
 
                     wc.commit(); wc.close()
-                    st.success(f"개체 {len(moving_cids)}마리 → {bulk_move_b} {bulk_move_p}번 우방으로 이동 완료")
+                    notify(f"개체 {len(moving_cids)}마리 → {bulk_move_b} {bulk_move_p}번 우방으로 이동 완료", icon="✅")
                     st.rerun()
 
 with tab1:
@@ -2719,12 +2868,25 @@ with tab1:
             JOIN testgroup_master t ON c.test_group_code = t.test_group_code
             ORDER BY c.status, c.cattle_id
         """, conn)
-        st.dataframe(df_cattle, use_container_width=True, hide_index=True)
+        df_cattle['상태'] = df_cattle['상태'].map({'사육': '🟢 사육', '출하': '🔵 출하', '폐사': '🔴 폐사'}).fillna(df_cattle['상태'])
+        st.dataframe(
+            df_cattle, width="stretch", hide_index=True,
+            column_config={
+                "상태": st.column_config.TextColumn(width="small"),
+                "초기원가": st.column_config.NumberColumn("초기원가 (원)", format="localized", alignment="right"),
+            },
+        )
     with col_b:
         st.subheader("품목 및 재고 상태")
         st.caption("매입 시마다 이동평균단가가 자동으로 갱신됩니다.")
         df_item = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, unit as 단위, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
-        st.dataframe(df_item, use_container_width=True, hide_index=True)
+        st.dataframe(
+            df_item, width="stretch", hide_index=True,
+            column_config={
+                "현재재고": st.column_config.NumberColumn(format="localized", alignment="right"),
+                "이동평균단가": st.column_config.NumberColumn("이동평균단가 (원)", format="localized", alignment="right"),
+            },
+        )
 
 with tab0:
     col_left, col_right = st.columns(2)
@@ -2747,7 +2909,7 @@ with tab0:
             new_item_name = st.text_input("품목명", placeholder="예: TMR사료")
             new_item_category = st.selectbox("분류", ["사료", "조사료", "약품", "기타저장품"])
             new_item_unit = st.selectbox("단위", ["kg", "ml", "개"])
-            submitted_item = st.form_submit_button("품목 등록", type="primary", use_container_width=True)
+            submitted_item = st.form_submit_button("품목 등록", type="primary", width="stretch")
             if submitted_item:
                 if new_item_name:
                     try:
@@ -2768,7 +2930,7 @@ with tab0:
                         )
                         write_conn.commit()
                         write_conn.close()
-                        st.success(f"품목 '{new_item_name}' ({final_item_code})이 등록되었습니다.")
+                        notify(f"품목 '{new_item_name}' ({final_item_code})이 등록되었습니다.", icon="✅")
                         st.rerun()
                     except sqlite3.IntegrityError:
                         write_conn.rollback(); write_conn.close()
@@ -2783,17 +2945,20 @@ with tab0:
 
         edited_item_df = st.data_editor(
             df_items_all,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             disabled=["품목코드", "현재재고", "이동평균단가"],
             column_config={
+                "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
                 "단위": st.column_config.SelectboxColumn("단위", options=["kg", "ml", "개"]),
+                "현재재고": st.column_config.NumberColumn(format="localized", alignment="right"),
+                "이동평균단가": st.column_config.NumberColumn("이동평균단가 (원)", format="localized", alignment="right"),
             },
             num_rows="dynamic",
             key="item_master_editor"
         )
 
-        if st.button("품목 수정 사항 저장", type="secondary", use_container_width=True):
+        if st.button("품목 수정 사항 저장", type="primary", width="stretch"):
             write_conn = db_connect(DB_FILE)
             current_codes = edited_item_df[~edited_item_df["삭제"]]['품목코드'].dropna().tolist()
 
@@ -2811,7 +2976,7 @@ with tab0:
             
             write_conn.commit()
             write_conn.close()
-            st.success("품목 내역이 업데이트 되었습니다.")
+            notify("품목 내역이 업데이트 되었습니다.", icon="✅")
             st.rerun()
     
     with col_right:
@@ -2847,7 +3012,7 @@ with tab0:
                     on_change=format_thousands_input, args=("purchase_amount_text",),
                 )
 
-            if st.button("매입 등록", type="primary", use_container_width=True, key="submit_purchase_btn"):
+            if st.button("매입 등록", type="primary", width="stretch", key="submit_purchase_btn"):
                 purchase_qty = parse_thousands_input("purchase_qty_text")
                 purchase_amount = parse_thousands_input("purchase_amount_text")
                 if purchase_qty > 0 and purchase_amount > 0:
@@ -2862,7 +3027,7 @@ with tab0:
                     write_conn.close()
                     unit_price = purchase_amount / purchase_qty
                     st.session_state["_reset_purchase_fields"] = True
-                    st.success(f"매입 완료! {purchase_item_label} | {purchase_qty:,.1f} {purchase_unit} | {purchase_amount:,}원 (단가 {unit_price:,.0f}원)")
+                    notify(f"매입 완료! {purchase_item_label} | {purchase_qty:,.1f} {purchase_unit} | {purchase_amount:,}원 (단가 {unit_price:,.0f}원)", icon="✅")
                     st.rerun()
                 else:
                     st.warning("수량과 금액을 올바르게 입력하세요.")
@@ -2899,14 +3064,21 @@ with tab0:
         
         edited_purchase_df = st.data_editor(
             df_purchase,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             disabled=["매입ID", "품목명", "단가"],
             num_rows="dynamic",
-            key="purchase_editor"
+            key="purchase_editor",
+            column_config={
+                "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
+                "매입ID": st.column_config.NumberColumn(width="small"),
+                "수량": st.column_config.NumberColumn(format="localized", alignment="right"),
+                "총금액": st.column_config.NumberColumn("총금액 (원)", format="localized", alignment="right"),
+                "단가": st.column_config.NumberColumn("단가 (원)", format="localized", alignment="right"),
+            },
         )
         
-        if st.button("매입 수정 사항 저장", type="secondary", use_container_width=True):
+        if st.button("매입 수정 사항 저장", type="primary", width="stretch"):
             write_conn = db_connect(DB_FILE)
             current_ids = edited_purchase_df[~edited_purchase_df["삭제"]]['매입ID'].dropna().tolist()
             
@@ -2937,7 +3109,7 @@ with tab0:
                 
             write_conn.commit()
             write_conn.close()
-            st.success("매입 내역이 업데이트 및 재고가 재계산 되었습니다.")
+            notify("매입 내역이 업데이트 및 재고가 재계산 되었습니다.", icon="✅")
             st.rerun()
 
 with tab2:
@@ -2962,7 +3134,7 @@ with tab2:
             # 정산연월은 같은 달에 품목을 여러 번 등록하는 경우가 많아서, 폼이
             # clear_on_submit 으로 초기화되어도 마지막에 등록한 연월이 유지되도록 한다.
             if "last_usage_month" not in st.session_state:
-                st.session_state["last_usage_month"] = "2023-10"
+                st.session_state["last_usage_month"] = datetime.now().strftime('%Y-%m')
 
             with st.form("add_usage_form", clear_on_submit=True):
                 usage_month = st.text_input("정산연월", value=st.session_state["last_usage_month"], help="형식: YYYY-MM")
@@ -2990,7 +3162,7 @@ with tab2:
                         write_conn.commit()
                         write_conn.close()
                         st.session_state["last_usage_month"] = usage_month
-                        st.success(f"등록 완료! {usage_group_label} | {usage_item_label} | {usage_qty:,.1f} 사용 | 적용단가 {avg_price:,.0f}원 | 산출액 {calc_amount:,.0f}원")
+                        notify(f"등록 완료! {usage_group_label} | {usage_item_label} | {usage_qty:,.1f} 사용 | 적용단가 {avg_price:,.0f}원 | 산출액 {calc_amount:,.0f}원", icon="✅")
                         st.rerun()
                     else:
                         st.warning("정산연월과 사용량을 올바르게 입력하세요.")
@@ -3032,9 +3204,16 @@ with tab2:
             disabled=["ID", "시험군", "품목명", "산출총액"],
             num_rows="dynamic",
             key="usage_editor",
+            column_config={
+                "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
+                "ID": st.column_config.NumberColumn(width="small"),
+                "사용량": st.column_config.NumberColumn(format="localized", alignment="right"),
+                "적용단가": st.column_config.NumberColumn("적용단가 (원)", format="localized", alignment="right"),
+                "산출총액": st.column_config.NumberColumn("산출총액 (원)", format="localized", alignment="right"),
+            },
         )
 
-        if st.button("사용 내역 수정 사항 저장", type="secondary", width="stretch"):
+        if st.button("사용 내역 수정 사항 저장", type="primary", width="stretch"):
             write_conn = db_connect(DB_FILE)
             current_usage_ids = edited_usage_df[~edited_usage_df["삭제"]]['ID'].dropna().tolist()
 
@@ -3056,14 +3235,14 @@ with tab2:
 
             write_conn.commit()
             write_conn.close()
-            st.success("사용 내역이 업데이트 되었습니다.")
+            notify("사용 내역이 업데이트 되었습니다.", icon="✅")
             st.rerun()
     
     with col_d:
         st.markdown("##### ⚡ 농장 고정비 등록")
 
         if "last_fc_month" not in st.session_state:
-            st.session_state["last_fc_month"] = "2023-10"
+            st.session_state["last_fc_month"] = datetime.now().strftime('%Y-%m')
 
         with st.form("add_fixedcost_form", clear_on_submit=True):
             fc_month = st.text_input("정산연월 ", value=st.session_state["last_fc_month"], help="형식: YYYY-MM")
@@ -3081,7 +3260,7 @@ with tab2:
                     write_conn.commit()
                     write_conn.close()
                     st.session_state["last_fc_month"] = fc_month
-                    st.success(f"등록 완료! [{fc_month}] {fc_item} | {fc_amount:,}원")
+                    notify(f"등록 완료! [{fc_month}] {fc_item} | {fc_amount:,}원", icon="✅")
                     st.rerun()
                 else:
                     st.warning("정산연월과 금액을 올바르게 입력하세요.")
@@ -3102,10 +3281,15 @@ with tab2:
             hide_index=True,
             disabled=["ID"],
             num_rows="dynamic",
-            key="fixedcost_editor"
+            key="fixedcost_editor",
+            column_config={
+                "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
+                "ID": st.column_config.NumberColumn(width="small"),
+                "총청구금액": st.column_config.NumberColumn("총청구금액 (원)", format="localized", alignment="right"),
+            },
         )
         
-        if st.button("고정비 수정 사항 저장", type="secondary", width="stretch"):
+        if st.button("고정비 수정 사항 저장", type="primary", width="stretch"):
             write_conn = db_connect(DB_FILE)
             current_ids = edited_fc_df[~edited_fc_df["삭제"]]['ID'].dropna().tolist()
             
@@ -3129,14 +3313,14 @@ with tab2:
                         )
             write_conn.commit()
             write_conn.close()
-            st.success("고정비 내역이 업데이트 되었습니다.")
+            notify("고정비 내역이 업데이트 되었습니다.", icon="✅")
             st.rerun()
 
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.markdown("### 🚀 월말 정산(일할계산) 실행")
     st.markdown("아래 버튼을 누르면 위에서 등록한 변동비·고정비를 분석하여, 이번 달 사육 이력이 있는 각 개체에 **실제 사육일수에 비례해(일할계산)** 변동비와 고정비를 배분합니다.")
     
-    target_month = st.text_input("정산 대상 연월 (예: 2023-10)", value="2023-10", key="calc_target_month")
+    target_month = st.text_input("정산 대상 연월 (YYYY-MM)", value=datetime.now().strftime('%Y-%m'), key="calc_target_month")
     
     # 정산 전 요약 미리보기
     preview_usage = pd.read_sql("""
@@ -3152,10 +3336,19 @@ with tab2:
         st.markdown(f"**[{target_month}] 정산 대상 비용 요약:**")
         col_p1, col_p2 = st.columns(2)
         with col_p1:
-            st.dataframe(preview_usage, width="stretch", hide_index=True)
+            st.dataframe(
+                preview_usage, width="stretch", hide_index=True,
+                column_config={
+                    "변동비_합계": st.column_config.NumberColumn("변동비 합계 (원)", format="localized", alignment="right"),
+                },
+            )
         with col_p2:
             fixed_val = preview_fixed.iloc[0]['고정비_합계'] if pd.notna(preview_fixed.iloc[0]['고정비_합계']) else 0
-            st.metric("고정비 합계", f"{fixed_val:,.0f} 원")
+            variable_val = preview_usage['변동비_합계'].sum() if not preview_usage.empty else 0
+            st.metric("고정비 합계", f"{fixed_val:,.0f} 원",
+                      delta=f"변동비 포함 총 {fixed_val + variable_val:,.0f} 원", delta_color="off", delta_arrow="off")
+    else:
+        st.info(f"[{target_month}] 에 등록된 사용량·고정비가 없습니다. 정산 전에 위에서 비용을 먼저 등록하세요.")
     
     if st.button("🚀 정산 실행(일할계산) 및 누적원가 반영", type="primary"):
         success, msg = distribute_monthly_costs(DB_FILE, target_month)
@@ -3172,7 +3365,17 @@ with tab2:
         if df_log.empty:
             st.info("해당 연월에 아직 정산된 내역이 없습니다.")
         else:
-            st.dataframe(df_log, width="stretch", hide_index=True)
+            money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right")
+            st.dataframe(
+                df_log, width="stretch", hide_index=True,
+                column_config={
+                    "cattle_id": st.column_config.TextColumn("이표번호"),
+                    "settlement_month": st.column_config.TextColumn("정산연월"),
+                    "변동비_할당": money("변동비 할당 (원)"),
+                    "고정비_할당": money("고정비 할당 (원)"),
+                    "당월_추가원가": money("당월 추가원가 (원)"),
+                },
+            )
     except:
         st.info("아직 정산된 내역이 없습니다.")
 
