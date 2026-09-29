@@ -1405,6 +1405,77 @@ def reset_dialog(farm_name, db_file):
             st.rerun()
 
 
+def cattle_reset_preview(db_file):
+    """개체 전체 삭제로 함께 지워질 데이터 건수 (cattle 및 cattle을 참조하는 표)."""
+    tables = [
+        ("개체", "cattle"),
+        ("질병·처방 기록", "disease_record"),
+        ("개체별 원가 내역", "cattle_cost_log"),
+        ("개체별 품목 사용 내역", "cattle_item_usage_log"),
+    ]
+    rows = []
+    if not os.path.exists(db_file):
+        return rows
+    conn = db_connect(db_file)
+    try:
+        for label, table in tables:
+            try:
+                count = conn.execute("SELECT COUNT(*) FROM %s" % table).fetchone()[0]
+            except sqlite3.Error:
+                continue
+            if count:
+                rows.append((label, count))
+    finally:
+        conn.close()
+    return rows
+
+
+@st.dialog("⚠️ 등록된 개체를 전부 삭제하시겠습니까?")
+def cattle_reset_dialog(farm_name, db_file):
+    st.error(f"**{farm_name}**에 등록된 모든 개체(입식 내역)가 삭제됩니다. 이 작업은 되돌릴 수 없습니다.")
+    rows = cattle_reset_preview(db_file)
+    if rows:
+        st.markdown("**지워지는 데이터**")
+        st.markdown("\n".join("- %s **%s건**" % (label, format(count, ",")) for label, count in rows))
+    else:
+        st.caption("현재 등록된 개체가 없습니다.")
+    st.caption("시험군·품목·매입 내역 등은 그대로 남습니다. 실행 직전 자동으로 백업본을 만들기 때문에, 사이드바의 '백업 파일로 복원'으로 되돌릴 수 있습니다.")
+
+    pw = st.text_input("계속하려면 관리자 비밀번호를 입력하세요", type="password", key="cattle_reset_pw")
+    col_cancel, col_run = st.columns(2)
+    if col_cancel.button("취소", width="stretch", key="cattle_reset_cancel"):
+        st.session_state.pop("cattle_reset_pw", None)
+        st.rerun()
+    if col_run.button("개체 전체 삭제", type="primary", width="stretch", key="cattle_reset_run"):
+        if not pw:
+            st.warning("비밀번호를 입력하세요.")
+        elif pw != reset_password():
+            st.error("비밀번호가 올바르지 않습니다. 삭제하지 않았습니다.")
+        else:
+            backup_db(db_file, "before-cattle-reset")
+            wc = db_connect(db_file)
+            wc.execute("DELETE FROM cattle_item_usage_log")
+            wc.execute("DELETE FROM cattle_cost_log")
+            wc.execute("DELETE FROM disease_record")
+            wc.execute("DELETE FROM cattle")
+            wc.commit(); wc.close()
+            st.session_state.pop("cattle_reset_pw", None)
+            st.session_state["cattle_reset_done"] = True
+            st.rerun()
+
+
+st.sidebar.markdown("---")
+with st.sidebar.expander("🐄 등록된 개체 전체 삭제"):
+    st.caption(f"**{selected_farm}**에 등록된 개체(입식 내역)만 삭제됩니다. 시험군·품목 등은 유지됩니다. 실행 직전 자동으로 백업본을 만듭니다.")
+    if st.button("개체 전체 삭제 실행", width="stretch"):
+        st.session_state.pop("cattle_reset_pw", None)
+        st.session_state["show_cattle_reset_dialog"] = True
+
+if st.session_state.pop("show_cattle_reset_dialog", False):
+    cattle_reset_dialog(selected_farm, DB_FILE)
+if st.session_state.pop("cattle_reset_done", False):
+    st.sidebar.success("등록된 개체가 모두 삭제되었습니다. (직전 상태는 백업에 보관)")
+
 st.sidebar.markdown("---")
 with st.sidebar.expander("⚠️ 초기 상태로 리셋"):
     st.caption(f"**{selected_farm}**의 데이터가 **전부 삭제**됩니다. 실행 직전 자동으로 백업본을 만듭니다.")
