@@ -1441,34 +1441,25 @@ def cattle_reset_dialog(farm_name, db_file):
         st.caption("현재 등록된 개체가 없습니다.")
     st.caption("시험군·품목·매입 내역 등은 그대로 남습니다. 실행 직전 자동으로 백업본을 만들기 때문에, 사이드바의 '백업 파일로 복원'으로 되돌릴 수 있습니다.")
 
-    pw = st.text_input("계속하려면 관리자 비밀번호를 입력하세요", type="password", key="cattle_reset_pw")
     col_cancel, col_run = st.columns(2)
     if col_cancel.button("취소", width="stretch", key="cattle_reset_cancel"):
-        st.session_state.pop("cattle_reset_pw", None)
         st.rerun()
-    if col_run.button("개체 전체 삭제", type="primary", width="stretch", key="cattle_reset_run"):
-        if not pw:
-            st.warning("비밀번호를 입력하세요.")
-        elif pw != reset_password():
-            st.error("비밀번호가 올바르지 않습니다. 삭제하지 않았습니다.")
-        else:
-            backup_db(db_file, "before-cattle-reset")
-            wc = db_connect(db_file)
-            wc.execute("DELETE FROM cattle_item_usage_log")
-            wc.execute("DELETE FROM cattle_cost_log")
-            wc.execute("DELETE FROM disease_record")
-            wc.execute("DELETE FROM cattle")
-            wc.commit(); wc.close()
-            st.session_state.pop("cattle_reset_pw", None)
-            st.session_state["cattle_reset_done"] = True
-            st.rerun()
+    if col_run.button("네, 삭제합니다", type="primary", width="stretch", key="cattle_reset_run"):
+        backup_db(db_file, "before-cattle-reset")
+        wc = db_connect(db_file)
+        wc.execute("DELETE FROM cattle_item_usage_log")
+        wc.execute("DELETE FROM cattle_cost_log")
+        wc.execute("DELETE FROM disease_record")
+        wc.execute("DELETE FROM cattle")
+        wc.commit(); wc.close()
+        st.session_state["cattle_reset_done"] = True
+        st.rerun()
 
 
 st.sidebar.markdown("---")
 with st.sidebar.expander("🐄 등록된 개체 전체 삭제"):
     st.caption(f"**{selected_farm}**에 등록된 개체(입식 내역)만 삭제됩니다. 시험군·품목 등은 유지됩니다. 실행 직전 자동으로 백업본을 만듭니다.")
     if st.button("개체 전체 삭제 실행", width="stretch"):
-        st.session_state.pop("cattle_reset_pw", None)
         st.session_state["show_cattle_reset_dialog"] = True
 
 if st.session_state.pop("show_cattle_reset_dialog", False):
