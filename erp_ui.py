@@ -1018,6 +1018,434 @@ def generate_settlement_report(db_file, farm_name, settlement_month):
     return True, html_doc
 
 
+OVERALL_REPORT_CSS = """
+:root {
+  --bg: #f1f5f9; --card: #ffffff; --ink: #0f172a; --muted: #64748b; --line: #e2e8f0;
+  --brand: #4F46E5; --green: #059669; --red: #DC2626; --blue: #2563EB; --amber: #D97706;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: 'Pretendard', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+  line-height: 1.5; -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 1200px; margin: 0 auto; padding: 32px 24px 48px; }
+
+.report-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  background: linear-gradient(135deg, #1e1b4b 0%, #4338ca 100%); color: #fff;
+  border-radius: 20px; padding: 24px 28px; box-shadow: 0 10px 30px rgba(67, 56, 202, 0.25);
+}
+.brand { display: flex; align-items: center; gap: 14px; }
+.brand img { height: 48px; background: #fff; border-radius: 12px; padding: 4px; }
+.brand h1 { margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
+.date-badge {
+  background: rgba(255, 255, 255, 0.15); border: 1px solid rgba(255, 255, 255, 0.3);
+  padding: 8px 16px; border-radius: 999px; font-weight: 600; font-size: 14px; white-space: nowrap;
+}
+
+.section { margin-top: 36px; }
+.section-title { display: flex; align-items: center; gap: 10px; font-size: 19px; font-weight: 800; margin: 0 0 14px; }
+.section-title .no {
+  display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+  border-radius: 8px; background: var(--brand); color: #fff; font-size: 14px;
+}
+
+.kpi-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 16px; }
+.kpi {
+  position: relative; overflow: hidden; background: var(--card); border: 1px solid var(--line);
+  border-radius: 18px; padding: 20px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.07);
+}
+.kpi::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 4px; background: var(--accent); }
+.kpi.total { --accent: var(--brand); }
+.kpi.breeding { --accent: var(--green); }
+.kpi.dead { --accent: var(--red); }
+.kpi.shipped { --accent: var(--blue); }
+.kpi.cost { --accent: var(--amber); }
+.kpi-label { font-size: 13px; font-weight: 600; color: var(--muted); }
+.kpi-value {
+  margin-top: 12px; font-size: 30px; font-weight: 800; letter-spacing: -0.02em;
+  color: var(--accent); font-variant-numeric: tabular-nums;
+}
+.kpi-value small { font-size: 15px; font-weight: 700; color: var(--muted); margin-left: 3px; }
+.kpi-sub { margin-top: 4px; font-size: 12px; color: var(--muted); }
+
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 20px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.06); margin-bottom: 16px;
+}
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.card-head h3 { margin: 0; font-size: 15px; font-weight: 700; }
+.card-head span { font-size: 12px; color: var(--muted); }
+.chart-box { position: relative; height: 320px; }
+.donut-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.donut-item .chart-box { height: 300px; }
+.donut-item p { margin: 8px 0 0; text-align: center; font-weight: 700; font-size: 14px; }
+.chart-fallback { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted); font-size: 13px; }
+
+.table-wrap { max-height: 460px; overflow: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; }
+.data-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; }
+.data-table th {
+  position: sticky; top: 0; z-index: 2; background: #1e293b; color: #fff; font-weight: 600;
+  padding: 11px 14px; text-align: right; white-space: nowrap;
+}
+.data-table td {
+  padding: 10px 14px; border-bottom: 1px solid var(--line); text-align: right;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.data-table th.left, .data-table td.left { text-align: left; }
+.data-table tbody tr:nth-child(even) td { background: #f8fafc; }
+.data-table tbody tr:hover td { background: #e0e7ff; }
+.data-table tfoot td {
+  position: sticky; bottom: 0; z-index: 1; background: #f1f5f9; font-weight: 800;
+  border-top: 2px solid #cbd5e1; border-bottom: none;
+}
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: middle; }
+.farm-sub { display: flex; align-items: center; font-size: 16px; font-weight: 700; margin: 22px 0 10px; }
+.empty { background: var(--card); border: 1px dashed #cbd5e1; border-radius: 14px; padding: 24px; text-align: center; color: var(--muted); }
+
+.footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line); text-align: center; color: var(--muted); font-size: 12px; }
+.print-wrap { margin-top: 20px; text-align: center; }
+.print-btn {
+  background: var(--brand); color: #fff; border: none; border-radius: 999px; padding: 12px 32px;
+  font-size: 15px; font-weight: 700; cursor: pointer; box-shadow: 0 8px 20px rgba(79, 70, 229, 0.3);
+  font-family: inherit;
+}
+.print-btn:hover { background: #4338ca; }
+
+@media (max-width: 1024px) {
+  .kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .container { padding: 16px 16px 32px; }
+  .report-header { padding: 20px; border-radius: 16px; }
+  .brand h1 { font-size: 20px; }
+  .brand img { height: 38px; }
+  .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .kpi { padding: 16px; }
+  .kpi-value { font-size: 24px; }
+  .chart-box, .donut-item .chart-box { height: 260px; }
+  .data-table { font-size: 13px; }
+  .data-table th, .data-table td { padding: 9px 10px; }
+}
+@media (max-width: 380px) {
+  .kpi-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media print {
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { background: #fff; }
+  .container { max-width: none; padding: 0; }
+  .no-print { display: none !important; }
+  .kpi-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+  .kpi, .card { box-shadow: none; break-inside: avoid; }
+  .table-wrap { max-height: none; overflow: visible; }
+  .data-table th, .data-table tfoot td { position: static; }
+  .data-table tbody tr:hover td { background: inherit; }
+  .farm-sub { break-after: avoid; }
+}
+"""
+
+OVERALL_REPORT_JS = """
+(function () {
+  var data = JSON.parse(document.getElementById('report-data').textContent);
+  if (typeof Chart === 'undefined') {
+    document.querySelectorAll('.chart-box').forEach(function (el) {
+      el.innerHTML = '<div class="chart-fallback">차트를 불러오지 못했습니다 (인터넷 연결 필요)</div>';
+    });
+    return;
+  }
+  var nf = new Intl.NumberFormat('ko-KR');
+  var FONT = "'Pretendard', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif";
+  Chart.defaults.font.family = FONT;
+  Chart.defaults.color = '#475569';
+  Chart.defaults.animation.duration = 600;
+
+  var barValueLabels = {
+    id: 'barValueLabels',
+    afterDatasetsDraw: function (chart) {
+      var c = chart.ctx;
+      c.save();
+      c.textAlign = 'center'; c.textBaseline = 'bottom';
+      c.font = '700 13px ' + FONT;
+      chart.data.datasets.forEach(function (ds, di) {
+        var meta = chart.getDatasetMeta(di);
+        if (meta.hidden) return;
+        c.fillStyle = di === 0 ? '#4338ca' : '#b45309';
+        meta.data.forEach(function (bar, i) {
+          c.fillText(nf.format(ds.data[i]) + ds.unit, bar.x, bar.y - 6);
+        });
+      });
+      c.restore();
+    }
+  };
+
+  var barEl = document.getElementById('farmBarChart');
+  if (barEl && data.farms.length) {
+    new Chart(barEl, {
+      type: 'bar',
+      data: {
+        labels: data.farms.map(function (f) { return f.name; }),
+        datasets: [
+          { label: '전체 입식 (두)', unit: '두', data: data.farms.map(function (f) { return f.total; }),
+            backgroundColor: 'rgba(79, 70, 229, 0.85)', borderRadius: 8, maxBarThickness: 64, yAxisID: 'y' },
+          { label: '총 구입비용 (만원)', unit: '만원', data: data.farms.map(function (f) { return f.cost_man; }),
+            backgroundColor: 'rgba(217, 119, 6, 0.85)', borderRadius: 8, maxBarThickness: 64, yAxisID: 'y1' }
+        ]
+      },
+      plugins: [barValueLabels],
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'bottom', labels: { usePointStyle: true, pointStyle: 'rectRounded' } },
+          tooltip: { callbacks: { label: function (ctx) { return ' ' + ctx.dataset.label + ': ' + nf.format(ctx.parsed.y); } } }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { weight: '700' } } },
+          y: { beginAtZero: true, grace: '15%', position: 'left', title: { display: true, text: '입식 두수 (두)' },
+               ticks: { callback: function (v) { return nf.format(v); } } },
+          y1: { beginAtZero: true, grace: '15%', position: 'right', grid: { drawOnChartArea: false },
+                title: { display: true, text: '총 구입비용 (만원)' },
+                ticks: { callback: function (v) { return nf.format(v); } } }
+        }
+      }
+    });
+  }
+
+  var palette = ['#4F46E5', '#059669', '#D97706', '#2563EB', '#DC2626', '#7C3AED',
+                 '#0891B2', '#DB2777', '#65A30D', '#EA580C', '#475569', '#0D9488'];
+
+  function centerText(total) {
+    return {
+      id: 'centerText',
+      afterDraw: function (chart) {
+        var meta = chart.getDatasetMeta(0);
+        if (!meta || !meta.data.length) return;
+        var x = meta.data[0].x, y = meta.data[0].y, c = chart.ctx;
+        c.save();
+        c.textAlign = 'center'; c.textBaseline = 'middle';
+        c.fillStyle = '#0f172a'; c.font = '800 22px ' + FONT;
+        c.fillText(nf.format(total) + '두', x, y - 9);
+        c.fillStyle = '#64748b'; c.font = '600 11px ' + FONT;
+        c.fillText('총 구입', x, y + 13);
+        c.restore();
+      }
+    };
+  }
+
+  // 같은 우시장은 어느 농장 도넛에서든 같은 색으로 보이게 한다.
+  var marketColor = {};
+  data.markets.forEach(function (m) {
+    m.items.forEach(function (x) {
+      if (!(x.market in marketColor)) {
+        marketColor[x.market] = palette[Object.keys(marketColor).length % palette.length];
+      }
+    });
+  });
+
+  data.markets.forEach(function (m, i) {
+    var el = document.getElementById('donut-' + i);
+    if (!el) return;
+    var total = m.items.reduce(function (s, x) { return s + x.count; }, 0);
+    new Chart(el, {
+      type: 'doughnut',
+      data: {
+        labels: m.items.map(function (x) { return x.market; }),
+        datasets: [{
+          data: m.items.map(function (x) { return x.count; }),
+          backgroundColor: m.items.map(function (x) { return marketColor[x.market]; }),
+          borderColor: '#ffffff', borderWidth: 2, hoverOffset: 8
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: '62%',
+        plugins: {
+          legend: { position: 'bottom', labels: { boxWidth: 12, usePointStyle: true } },
+          tooltip: { callbacks: { label: function (ctx) {
+            return ' ' + ctx.label + ': ' + nf.format(ctx.parsed) + '두 (' + (ctx.parsed / total * 100).toFixed(1) + '%)';
+          } } }
+        }
+      },
+      plugins: [centerText(total)]
+    });
+  });
+
+  window.addEventListener('beforeprint', function () {
+    Object.values(Chart.instances).forEach(function (c) { c.resize(); });
+  });
+})();
+"""
+
+
+def generate_overall_report_html(df_all, farm_order, farm_colors):
+    """전체 현황 통합 보고서(요약 카드 + Chart.js 차트 + 표)를 단독 실행 가능한 HTML로 만든다."""
+    esc = html.escape
+
+    def num(n):
+        return f"{int(n):,}"
+
+    def man(won):
+        return int(won) // 10000
+
+    def avg_won(series):
+        return series.mean(skipna=True) if series.notna().any() else 0
+
+    df = df_all.copy()
+    df['초기원가'] = pd.to_numeric(df['초기원가'], errors='coerce')
+    present = set(df['농장명'])
+    farms = [f for f in farm_order if f in present]
+
+    total_cnt = len(df)
+    breeding_cnt = int((df['상태'] == '사육').sum())
+    dead_cnt = int((df['상태'] == '폐사').sum())
+    shipped_cnt = int((df['상태'] == '출하').sum())
+    total_cost = df['초기원가'].sum(skipna=True)
+
+    def pct(part):
+        return f"{part / total_cnt * 100:.1f}%" if total_cnt else "0.0%"
+
+    kpis = [
+        ("total", "전체 누적 입식", num(total_cnt), "두", "등록된 전체 개체"),
+        ("breeding", "현재 사육중", num(breeding_cnt), "두", f"전체의 {pct(breeding_cnt)}"),
+        ("dead", "누적 폐사", num(dead_cnt), "두", f"폐사율 {pct(dead_cnt)}"),
+        ("shipped", "누적 출하", num(shipped_cnt), "두", f"출하율 {pct(shipped_cnt)}"),
+        ("cost", "총 구입비용", num(man(total_cost)), "만원", f"두당 평균 {num(man(avg_won(df['초기원가'])))}만원"),
+    ]
+    kpi_html = "".join(
+        f'<div class="kpi {cls}"><div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value">{value}<small>{unit}</small></div><div class="kpi-sub">{sub}</div></div>'
+        for cls, label, value, unit, sub in kpis
+    )
+
+    # 2. 농장별 요약
+    farm_rows, chart_farms = [], []
+    for f in farms:
+        d = df[df['농장명'] == f]
+        cost = d['초기원가'].sum(skipna=True)
+        chart_farms.append({"name": f, "total": len(d), "cost_man": man(cost)})
+        farm_rows.append(
+            f'<tr><td class="left"><span class="dot" style="background:{esc(farm_colors.get(f, "#4F46E5"))}"></span>{esc(f)}</td>'
+            f'<td>{num(len(d))}</td><td>{num((d["상태"] == "사육").sum())}</td>'
+            f'<td>{num((d["상태"] == "출하").sum())}</td><td>{num((d["상태"] == "폐사").sum())}</td>'
+            f'<td>{num(man(cost))}</td><td>{num(man(avg_won(d["초기원가"])))}</td></tr>'
+        )
+    farm_table = (
+        '<div class="table-wrap"><table class="data-table"><thead><tr>'
+        '<th class="left">농장명</th><th>전체 입식 (두)</th><th>현재 사육중 (두)</th>'
+        '<th>누적 출하 (두)</th><th>누적 폐사 (두)</th><th>총 구입비용 (만원)</th><th>두당 평균 (만원)</th>'
+        '</tr></thead><tbody>' + "".join(farm_rows) + '</tbody>'
+        f'<tfoot><tr><td class="left">합계</td><td>{num(total_cnt)}</td><td>{num(breeding_cnt)}</td>'
+        f'<td>{num(shipped_cnt)}</td><td>{num(dead_cnt)}</td><td>{num(man(total_cost))}</td>'
+        f'<td>{num(man(avg_won(df["초기원가"])))}</td></tr></tfoot></table></div>'
+    )
+
+    # 3. 농장별 우시장 구입 현황
+    dm = df[df['우시장'].notna() & (df['우시장'].astype(str).str.strip() != '')].copy()
+    dm['우시장'] = dm['우시장'].astype(str).str.strip()
+    chart_markets, donut_items, market_sections = [], [], []
+    idx = 0
+    for f in farms:
+        d = dm[dm['농장명'] == f]
+        if d.empty:
+            continue
+        idx += 1
+        grp = (
+            d.groupby('우시장')
+            .agg(cnt=('개체번호', 'count'), cost=('초기원가', lambda x: x.sum(skipna=True)),
+                 avg=('초기원가', avg_won))
+            .reset_index()
+            .sort_values(['cnt', '우시장'], ascending=[False, True])
+        )
+        farm_cnt = int(grp['cnt'].sum())
+        chart_markets.append({
+            "farm": f,
+            "items": [{"market": r['우시장'], "count": int(r['cnt'])} for _, r in grp.iterrows()],
+        })
+        donut_items.append(
+            f'<div class="donut-item"><div class="chart-box"><canvas id="donut-{idx - 1}"></canvas></div>'
+            f'<p>{idx}) {esc(f)}</p></div>'
+        )
+        rows = "".join(
+            f'<tr><td class="left">{esc(r["우시장"])}</td><td>{num(r["cnt"])}</td>'
+            f'<td>{r["cnt"] / farm_cnt * 100:.1f}%</td><td>{num(man(r["cost"]))}</td>'
+            f'<td>{num(man(r["avg"]))}</td></tr>'
+            for _, r in grp.iterrows()
+        )
+        market_sections.append(
+            f'<div class="farm-sub"><span class="dot" style="background:{esc(farm_colors.get(f, "#4F46E5"))}"></span>'
+            f'{idx}) {esc(f)}</div>'
+            '<div class="table-wrap"><table class="data-table"><thead><tr>'
+            '<th class="left">우시장</th><th>구입 마릿수 (두)</th><th>비중</th>'
+            '<th>총 구입비용 (만원)</th><th>두당 평균 (만원)</th></tr></thead>'
+            f'<tbody>{rows}</tbody>'
+            f'<tfoot><tr><td class="left">소계</td><td>{num(farm_cnt)}</td><td>100.0%</td>'
+            f'<td>{num(man(d["초기원가"].sum(skipna=True)))}</td><td>{num(man(avg_won(d["초기원가"])))}</td></tr></tfoot>'
+            '</table></div>'
+        )
+
+    if market_sections:
+        market_html = (
+            '<div class="card"><div class="card-head"><h3>농장별 우시장 구입 마릿수 비중</h3>'
+            '<span>도넛 위에 마우스를 올리면 마릿수와 비중이 표시됩니다</span></div>'
+            f'<div class="donut-grid">{"".join(donut_items)}</div></div>'
+            + "".join(market_sections)
+        )
+    else:
+        market_html = '<div class="empty">등록된 우시장 구입 이력이 없습니다.</div>'
+
+    chart_data = json.dumps({"farms": chart_farms, "markets": chart_markets}, ensure_ascii=False)
+    # <script> 안에 넣는 JSON 이므로 '</script>' 로 조기 종료되지 않게 '<' 를 이스케이프한다.
+    chart_data = chart_data.replace("<", "\\u003c")
+
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>대구축협 시험농장 현황 보고</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>{OVERALL_REPORT_CSS}</style>
+</head>
+<body>
+<div class="container">
+  <header class="report-header">
+    <div class="brand">
+      <img src="{MEDAL_ICON_DATA_URI}" alt="심볼">
+      <h1>대구축협 시험농장 현황 보고</h1>
+    </div>
+    <div class="date-badge">기준일: {datetime.now().strftime('%Y년 %m월 %d일')}</div>
+  </header>
+
+  <section class="section">
+    <h2 class="section-title"><span class="no">1</span>전체 요약 현황</h2>
+    <div class="kpi-grid">{kpi_html}</div>
+  </section>
+
+  <section class="section">
+    <h2 class="section-title"><span class="no">2</span>농장별 요약 현황</h2>
+    <div class="card">
+      <div class="card-head"><h3>농장별 전체 입식 두수 · 총 구입비용</h3><span>왼쪽 축: 두수 / 오른쪽 축: 만원</span></div>
+      <div class="chart-box"><canvas id="farmBarChart"></canvas></div>
+    </div>
+    {farm_table}
+  </section>
+
+  <section class="section">
+    <h2 class="section-title"><span class="no">3</span>농장별 우시장 구입 현황</h2>
+    {market_html}
+  </section>
+
+  <div class="footer">본 문서는 '대구축협 시험농장 관리 시스템'에 의해 자동 생성되었습니다.</div>
+  <div class="print-wrap no-print"><button class="print-btn" onclick="window.print()">🖨️ PDF 인쇄 및 저장</button></div>
+</div>
+<script id="report-data" type="application/json">{chart_data}</script>
+<script>{OVERALL_REPORT_JS}</script>
+</body>
+</html>"""
+
+
 # ========== UI 메인 ==========
 
 # 이전 실행(rerun)에서 닫히지 않은 연결부터 정리한다. -> "database is locked" 방지
@@ -1259,76 +1687,11 @@ if selected_farm == "시험농장 전체 현황":
         st.subheader("📑 통합 보고서 생성")
         st.markdown("현재 전체 현황 대시보드의 요약 수치 및 농장별 데이터 표를 기반으로 인쇄 가능한 HTML 보고서를 생성합니다.")
         if st.button("📄 보고서 생성", type="primary"):
-            if not df_market.empty:
-                market_html_parts = []
-                farms_in_market = [f for f in FARM_CONFIG.keys() if f in market_summary['농장명'].values]
-                for i, farm_nm in enumerate(farms_in_market, start=1):
-                    farm_market = market_summary[market_summary['농장명'] == farm_nm].drop(columns=['농장명'])
-                    market_html_parts.append(f"<h3>{i}) {html.escape(farm_nm)}</h3>")
-                    market_html_parts.append(farm_market.to_html(index=False, classes='table', justify='center'))
-                market_html = "".join(market_html_parts)
-            else:
-                market_html = '<p>우시장 구입 이력이 없습니다.</p>'
-            html_content = f"""
-            <html>
-            <head>
-                <meta charset="utf-8">
-                <title>대구축협 시험농장 현황 보고</title>
-                <style>
-                    body {{ font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; line-height: 1.6; padding: 20px; background: #f8fafc; }}
-                    h1, h3 {{ color: #333; }}
-                    h2 {{ color: #1e293b; border-left: 6px solid #4F46E5; padding-left: 12px; margin-top: 36px; }}
-                    .summary-box {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 24px; }}
-                    .metric {{
-                        background: #ffffff; border-radius: 12px; padding: 20px 10px;
-                        text-align: center; box-shadow: 0 2px 8px rgba(30, 41, 59, 0.08);
-                        border-top: 5px solid var(--accent, #4F46E5);
-                    }}
-                    .metric.total {{ --accent: #4F46E5; }}
-                    .metric.breeding {{ --accent: #059669; }}
-                    .metric.dead {{ --accent: #DC2626; }}
-                    .metric.shipped {{ --accent: #2563EB; }}
-                    .metric.cost {{ --accent: #D97706; }}
-                    .metric .title {{ font-size: 13px; color: #64748b; font-weight: 600; letter-spacing: 0.03em; }}
-                    .metric .value {{ font-size: 28px; font-weight: 800; color: var(--accent, #2c3e50); margin-top: 6px; }}
-                    .table {{ width: 100%; border-collapse: collapse; margin-bottom: 30px; font-size: 14px; text-align: center; background: #fff; }}
-                    .table th, .table td {{ border: 1px solid #ddd; padding: 8px; }}
-                    .table th {{ background-color: #2c3e50; color: white; text-align: center !important; }}
-                    @media print {{
-                        body {{ background: #fff; }}
-                        .metric {{ border: 1px solid #ccc; box-shadow: none; break-inside: avoid; }}
-                        .table th {{ color: black; }}
-                    }}
-                    @media (max-width: 700px) {{
-                        .summary-box {{ grid-template-columns: repeat(2, 1fr); }}
-                    }}
-                </style>
-            </head>
-            <body>
-                <div style="display: flex; align-items: center; justify-content: center; margin-bottom: 20px;">
-                    <img src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 40px; margin-right: 15px;">
-                    <h1 style="margin: 0;">대구축협 시험농장 현황 보고</h1>
-                </div>
-                <p><strong>기준일:</strong> {datetime.now().strftime('%Y년 %m월 %d일')}</p>
-                
-                <h2>1. 전체 요약 현황</h2>
-                <div class="summary-box">
-                    <div class="metric total"><div class="title">전체 누적 입식</div><div class="value">{total_admission:,}두</div></div>
-                    <div class="metric breeding"><div class="title">현재 사육중</div><div class="value">{current_breeding:,}두</div></div>
-                    <div class="metric dead"><div class="title">누적 폐사</div><div class="value">{dead_cattle:,}두</div></div>
-                    <div class="metric shipped"><div class="title">누적 출하</div><div class="value">{shipped_cattle:,}두</div></div>
-                    <div class="metric cost"><div class="title">총 구입비용</div><div class="value">{total_initial_cost // 10000:,}만원</div></div>
-                </div>
-                
-                <h2>2. 농장별 요약 현황</h2>
-                {farm_summary.to_html(index=False, classes='table', justify='center')}
-                
-                <h2>3. 농장별 우시장 구입 현황</h2>
-                {market_html}
-            </body>
-            </html>
-            """
-            st.session_state["overall_report_html"] = html_content
+            st.session_state["overall_report_html"] = generate_overall_report_html(
+                df_all,
+                list(FARM_CONFIG.keys()),
+                {k: v.get("color", "#4F46E5") for k, v in FARM_CONFIG.items()},
+            )
             
         overall_html = st.session_state.get("overall_report_html")
         if overall_html:
@@ -1341,7 +1704,7 @@ if selected_farm == "시험농장 전체 현황":
                 width="stretch",
             )
             st.markdown("###### 미리보기")
-            st.components.v1.html(overall_html, height=800, scrolling=True)
+            st.components.v1.html(overall_html, height=1400, scrolling=True)
 
     else:
         st.info("데이터가 있는 농장이 없습니다.")
