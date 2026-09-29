@@ -2178,7 +2178,8 @@ with tab_cattle:
             unique_groups = [g for g in df_all_cattle['시험군'].unique() if pd.notna(g)]
             filter_group = st.selectbox("📌 시험군 필터", ["(전체 보기)", "(미배정)"] + unique_groups)
         with col_f2:
-            unique_pens = sorted(list(set([str(p).strip() for p in df_all_cattle['우방'].unique() if pd.notna(p) and str(p).strip() != ''])))
+            pen_vals = set(str(p).strip() for p in df_all_cattle['우방'].unique() if pd.notna(p) and str(p).strip() != '')
+            unique_pens = sorted(pen_vals, key=lambda v: (0, int(v)) if v.isdigit() else (1, v))
             filter_pen = st.selectbox("🏠 우방 필터", ["(전체 보기)", "(미배정)"] + unique_pens)
         with col_f3:
             search_cid = st.text_input("🔎 이표번호 검색", placeholder="검색할 이표번호의 일부 또는 전체를 입력하세요...")
