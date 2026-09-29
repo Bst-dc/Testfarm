@@ -1188,25 +1188,48 @@ if selected_farm == "시험농장 전체 현황":
         st.subheader("📑 통합 보고서 생성")
         st.markdown("현재 전체 현황 대시보드의 요약 수치 및 농장별 데이터 표를 기반으로 인쇄 가능한 HTML 보고서를 생성합니다.")
         if st.button("📄 보고서 생성", type="primary"):
-            market_html = market_summary.to_html(index=False, classes='table', justify='center') if not df_market.empty else '<p>우시장 구입 이력이 없습니다.</p>'
+            if not df_market.empty:
+                market_html_parts = []
+                farms_in_market = [f for f in FARM_CONFIG.keys() if f in market_summary['농장명'].values]
+                for i, farm_nm in enumerate(farms_in_market, start=1):
+                    farm_market = market_summary[market_summary['농장명'] == farm_nm].drop(columns=['농장명'])
+                    market_html_parts.append(f"<h3>{i}) {html.escape(farm_nm)}</h3>")
+                    market_html_parts.append(farm_market.to_html(index=False, classes='table', justify='center'))
+                market_html = "".join(market_html_parts)
+            else:
+                market_html = '<p>우시장 구입 이력이 없습니다.</p>'
             html_content = f"""
             <html>
             <head>
                 <meta charset="utf-8">
                 <title>대구축협 시험농장 현황 보고</title>
                 <style>
-                    body {{ font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; line-height: 1.6; padding: 20px; }}
-                    h1, h2, h3 {{ color: #333; }}
-                    .summary-box {{ display: flex; justify-content: space-between; background: #f4f4f4; padding: 15px; border-radius: 5px; margin-bottom: 20px; text-align: center; }}
-                    .metric {{ flex: 1; }}
-                    .metric .title {{ font-size: 14px; color: #666; }}
-                    .metric .value {{ font-size: 20px; font-weight: bold; color: #2c3e50; }}
-                    .table {{ width: 100%; border-collapse: collapse; margin-bottom: 30px; font-size: 14px; text-align: center; }}
+                    body {{ font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; line-height: 1.6; padding: 20px; background: #f8fafc; }}
+                    h1, h3 {{ color: #333; }}
+                    h2 {{ color: #1e293b; border-left: 6px solid #4F46E5; padding-left: 12px; margin-top: 36px; }}
+                    .summary-box {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 24px; }}
+                    .metric {{
+                        background: #ffffff; border-radius: 12px; padding: 20px 10px;
+                        text-align: center; box-shadow: 0 2px 8px rgba(30, 41, 59, 0.08);
+                        border-top: 5px solid var(--accent, #4F46E5);
+                    }}
+                    .metric.total {{ --accent: #4F46E5; }}
+                    .metric.breeding {{ --accent: #059669; }}
+                    .metric.dead {{ --accent: #DC2626; }}
+                    .metric.shipped {{ --accent: #2563EB; }}
+                    .metric.cost {{ --accent: #D97706; }}
+                    .metric .title {{ font-size: 13px; color: #64748b; font-weight: 600; letter-spacing: 0.03em; }}
+                    .metric .value {{ font-size: 28px; font-weight: 800; color: var(--accent, #2c3e50); margin-top: 6px; }}
+                    .table {{ width: 100%; border-collapse: collapse; margin-bottom: 30px; font-size: 14px; text-align: center; background: #fff; }}
                     .table th, .table td {{ border: 1px solid #ddd; padding: 8px; }}
                     .table th {{ background-color: #2c3e50; color: white; text-align: center !important; }}
                     @media print {{
-                        .summary-box {{ border: 1px solid #ccc; }}
+                        body {{ background: #fff; }}
+                        .metric {{ border: 1px solid #ccc; box-shadow: none; break-inside: avoid; }}
                         .table th {{ color: black; }}
+                    }}
+                    @media (max-width: 700px) {{
+                        .summary-box {{ grid-template-columns: repeat(2, 1fr); }}
                     }}
                 </style>
             </head>
@@ -1215,15 +1238,15 @@ if selected_farm == "시험농장 전체 현황":
                     <img src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 40px; margin-right: 15px;">
                     <h1 style="margin: 0;">대구축협 시험농장 현황 보고</h1>
                 </div>
-                <p><strong>생성일시:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                <p><strong>기준일:</strong> {datetime.now().strftime('%Y년 %m월 %d일')}</p>
                 
                 <h2>1. 전체 요약 현황</h2>
                 <div class="summary-box">
-                    <div class="metric"><div class="title">전체 누적 입식</div><div class="value">{total_admission:,}두</div></div>
-                    <div class="metric"><div class="title">현재 사육중</div><div class="value">{current_breeding:,}두</div></div>
-                    <div class="metric"><div class="title">누적 폐사</div><div class="value">{dead_cattle:,}두</div></div>
-                    <div class="metric"><div class="title">누적 출하</div><div class="value">{shipped_cattle:,}두</div></div>
-                    <div class="metric"><div class="title">총 구입비용</div><div class="value">{total_initial_cost // 10000:,}만원</div></div>
+                    <div class="metric total"><div class="title">전체 누적 입식</div><div class="value">{total_admission:,}두</div></div>
+                    <div class="metric breeding"><div class="title">현재 사육중</div><div class="value">{current_breeding:,}두</div></div>
+                    <div class="metric dead"><div class="title">누적 폐사</div><div class="value">{dead_cattle:,}두</div></div>
+                    <div class="metric shipped"><div class="title">누적 출하</div><div class="value">{shipped_cattle:,}두</div></div>
+                    <div class="metric cost"><div class="title">총 구입비용</div><div class="value">{total_initial_cost // 10000:,}만원</div></div>
                 </div>
                 
                 <h2>2. 농장별 요약 현황</h2>
@@ -2150,11 +2173,14 @@ with tab_cattle:
         ]
         df_all_cattle = df_all_cattle[cols_order]
 
-        col_f1, col_f2 = st.columns([1, 2])
+        col_f1, col_f2, col_f3 = st.columns([1, 1, 1.5])
         with col_f1:
             unique_groups = [g for g in df_all_cattle['시험군'].unique() if pd.notna(g)]
             filter_group = st.selectbox("📌 시험군 필터", ["(전체 보기)", "(미배정)"] + unique_groups)
         with col_f2:
+            unique_pens = sorted(list(set([str(p).strip() for p in df_all_cattle['우방'].unique() if pd.notna(p) and str(p).strip() != ''])))
+            filter_pen = st.selectbox("🏠 우방 필터", ["(전체 보기)", "(미배정)"] + unique_pens)
+        with col_f3:
             search_cid = st.text_input("🔎 이표번호 검색", placeholder="검색할 이표번호의 일부 또는 전체를 입력하세요...")
             
         if filter_group != "(전체 보기)":
@@ -2162,6 +2188,12 @@ with tab_cattle:
                 df_all_cattle = df_all_cattle[df_all_cattle['시험군'].isna()]
             else:
                 df_all_cattle = df_all_cattle[df_all_cattle['시험군'] == filter_group]
+                
+        if filter_pen != "(전체 보기)":
+            if filter_pen == "(미배정)":
+                df_all_cattle = df_all_cattle[df_all_cattle['우방'].isna() | (df_all_cattle['우방'] == '')]
+            else:
+                df_all_cattle = df_all_cattle[df_all_cattle['우방'].astype(str).str.strip() == filter_pen]
                 
         if search_cid:
             df_all_cattle = df_all_cattle[df_all_cattle['이표번호'].astype(str).str.contains(search_cid)]
