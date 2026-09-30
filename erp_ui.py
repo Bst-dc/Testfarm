@@ -320,7 +320,7 @@ def show_pending_toasts():
 
 def settlement_month_input(conn, table, label, key, view_key):
     """등록 폼 위의 '정산연월' 입력칸. 폼 밖에 두어야 값을 바꾸는 즉시 화면이 다시 그려지고,
-    그때 아래 등록 내역 표의 조회 연월(view_key)도 같은 달로 맞춘다.
+    그때 아래 등록 내역 표의 조회 연월(view_key)과 월말 정산 대상 연월도 같은 달로 맞춘다.
     처음에는 내역이 있는 가장 최근 달(없으면 이번 달)로 시작해 아래 표와 맞춘다."""
     if key not in st.session_state:
         latest = conn.execute(f"SELECT MAX(settlement_month) FROM {table}").fetchone()[0]
@@ -330,6 +330,7 @@ def settlement_month_input(conn, table, label, key, view_key):
         month = str(st.session_state[key]).strip()
         if re.fullmatch(r"\d{4}-\d{2}", month):
             st.session_state[view_key] = month
+            st.session_state["calc_target_month"] = month
 
     return st.text_input(label, key=key, on_change=_sync, help="형식: YYYY-MM")
 
@@ -3093,46 +3094,68 @@ with tab0:
             item_options = {f"{r['item_name']} ({r['item_code']}) [{r['category']} · {r['unit'] or '단위 미지정'}]": r['item_code'] for _, r in items_df.iterrows()}
             item_units = {r['item_code']: r['unit'] for _, r in items_df.iterrows()}
 
-            # 매입수량/총매입금액은 천단위 콤마를 보여줘야 해서 st.number_input이 아닌
-            # text_input + on_change 콜백으로 처리한다. 콤마 입력창은 st.form 안에서는
-            # 제출 전까지 rerun이 안 돼 즉시 반영되지 않으므로, 이 폼은 st.form을 쓰지 않는다.
-            if st.session_state.pop("_reset_purchase_fields", False):
-                st.session_state["purchase_qty_text"] = ""
-                st.session_state["purchase_amount_text"] = ""
-
-            purchase_item_label = st.selectbox("매입 품목", list(item_options.keys()), key="purchase_item_sel")
+            # 거래명세서 한 장에 여러 품목이 함께 들어오므로, 매입일자는 한 번만 고르고
+            # 품목·수량·금액은 표에 여러 줄로 입력해 한꺼번에 등록한다.
             purchase_date = st.date_input("매입일자", key="purchase_date_input")
-            col_q, col_a2 = st.columns(2)
-            with col_q:
-                st.text_input(
-                    "매입수량", key="purchase_qty_text", placeholder="예: 1,000",
-                    on_change=format_thousands_input, args=("purchase_qty_text",),
-                )
-            with col_a2:
-                st.text_input(
-                    "총매입금액 (원)", key="purchase_amount_text", placeholder="예: 3,000,000",
-                    on_change=format_thousands_input, args=("purchase_amount_text",),
-                )
+            # 등록이 끝나면 키를 바꿔 입력표를 빈 상태로 새로 그린다.
+            purchase_form_ver = st.session_state.setdefault("purchase_form_ver", 0)
+            blank_rows = pd.DataFrame({
+                "품목": pd.Series([None] * 5, dtype="object"),
+                "수량": pd.Series([None] * 5, dtype="float"),
+                "총매입금액": pd.Series([None] * 5, dtype="float"),
+            })
+            purchase_input_df = st.data_editor(
+                blank_rows,
+                width="stretch",
+                hide_index=True,
+                num_rows="dynamic",
+                key=f"purchase_input_editor_{purchase_form_ver}",
+                column_config={
+                    "품목": st.column_config.SelectboxColumn("매입 품목", options=list(item_options.keys()), width="large"),
+                    "수량": st.column_config.NumberColumn("매입수량", min_value=0, format="localized", alignment="right"),
+                    "총매입금액": st.column_config.NumberColumn("총매입금액 (원)", min_value=0, format="localized", alignment="right"),
+                },
+            )
+            st.caption("품목을 고르고 수량·금액을 입력하세요. 빈 줄은 무시되고, 줄이 모자라면 표 아래 빈 칸을 눌러 추가합니다.")
 
-            if st.button("매입 등록", type="primary", width="stretch", key="submit_purchase_btn"):
-                purchase_qty = parse_thousands_input("purchase_qty_text")
-                purchase_amount = parse_thousands_input("purchase_amount_text")
-                if purchase_qty > 0 and purchase_amount > 0:
-                    selected_item_code = item_options[purchase_item_label]
-                    purchase_unit = item_units.get(selected_item_code) or ""
-                    write_conn = db_connect(DB_FILE)
-                    write_conn.execute(
-                        "INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount) VALUES (?, ?, ?, ?, ?)",
-                        (purchase_date.isoformat(), selected_item_code, purchase_qty, purchase_unit, purchase_amount)
-                    )
-                    write_conn.commit()
-                    write_conn.close()
-                    unit_price = purchase_amount / purchase_qty
-                    st.session_state["_reset_purchase_fields"] = True
-                    notify(f"매입 완료! {purchase_item_label} | {purchase_qty:,.1f} {purchase_unit} | {purchase_amount:,}원 (단가 {unit_price:,.0f}원)", icon="✅")
-                    st.rerun()
+            filled = purchase_input_df.dropna(how="all")
+            if not filled.empty:
+                preview_amt = pd.to_numeric(filled["총매입금액"], errors="coerce").fillna(0).sum()
+                show_table_total(len(filled), "총매입금액", preview_amt)
+
+            if st.button("매입 일괄 등록", type="primary", width="stretch", key="submit_purchase_btn"):
+                problems = []
+                rows_to_insert = []
+                for n, row in enumerate(filled.itertuples(index=False), start=1):
+                    qty = float(row.수량) if pd.notna(row.수량) else 0.0
+                    amt = float(row.총매입금액) if pd.notna(row.총매입금액) else 0.0
+                    if not row.품목 or row.품목 not in item_options:
+                        problems.append(f"{n}번째 줄: 품목을 고르세요.")
+                    elif qty <= 0 or amt <= 0:
+                        problems.append(f"{n}번째 줄 ({row.품목}): 수량과 금액을 0보다 크게 입력하세요.")
+                    else:
+                        code = item_options[row.품목]
+                        rows_to_insert.append((purchase_date.isoformat(), code, qty, item_units.get(code) or "", amt))
+
+                if problems:
+                    st.warning("등록하지 않았습니다. 아래 줄을 확인하세요.\n\n" + "\n".join(f"- {p}" for p in problems))
+                elif not rows_to_insert:
+                    st.warning("등록할 매입 내역을 입력하세요.")
                 else:
-                    st.warning("수량과 금액을 올바르게 입력하세요.")
+                    # 한 트랜잭션으로 넣어 일부만 들어가는 일이 없게 한다. 재고·이동평균단가는 트리거가 줄마다 갱신.
+                    write_conn = db_connect(DB_FILE)
+                    try:
+                        write_conn.executemany(
+                            "INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount) VALUES (?, ?, ?, ?, ?)",
+                            rows_to_insert,
+                        )
+                        write_conn.commit()
+                    finally:
+                        write_conn.close()
+                    st.session_state["purchase_form_ver"] = purchase_form_ver + 1
+                    total_amt = sum(r[4] for r in rows_to_insert)
+                    notify(f"매입 {len(rows_to_insert)}건 등록 완료! ({purchase_date.isoformat()}, 합계 {total_amt:,.0f}원)", icon="✅")
+                    st.rerun()
         
         st.markdown("---")
         st.markdown("##### 매입 내역 (체크박스로 삭제 가능)")
@@ -3386,26 +3409,33 @@ with tab2:
 
         fc_month = settlement_month_input(conn, "monthly_fixedcost", "정산연월 ", "fc_month_input", "fc_view_month")
 
-        with st.form("add_fixedcost_form", clear_on_submit=True):
-            fc_item = st.selectbox("지출 항목", ["인건비", "전기세", "시험사양수고비", "CCTV사용료", "우수등급장려금", "가축보험료", "기타"])
-            fc_amount = st.number_input("총 청구금액 (원)", min_value=0, step=10000)
+        # 청구금액에 천단위 콤마를 보여 주려고 number_input 대신 text_input + on_change 콜백을 쓴다.
+        # 콜백은 st.form 안에서는 제출 전까지 돌지 않으므로 이 입력은 폼 없이 둔다.
+        if st.session_state.pop("_reset_fc_fields", False):
+            st.session_state["fc_amount_text"] = ""
+        fc_item = st.selectbox("지출 항목", ["인건비", "전기세", "시험사양수고비", "CCTV사용료", "우수등급장려금", "가축보험료", "기타"], key="fc_item_sel")
+        st.text_input(
+            "총 청구금액 (원)", key="fc_amount_text", placeholder="예: 1,500,000",
+            on_change=format_thousands_input, args=("fc_amount_text",),
+        )
 
-            submitted_fc = st.form_submit_button("고정비 등록", type="primary", width="stretch")
-            if submitted_fc:
-                if fc_amount > 0 and re.fullmatch(r"\d{4}-\d{2}", fc_month.strip()):
-                    fc_month = fc_month.strip()
-                    write_conn = db_connect(DB_FILE)
-                    write_conn.execute(
-                        "INSERT INTO monthly_fixedcost (settlement_month, expense_item, total_billed_amount) VALUES (?, ?, ?)",
-                        (fc_month, fc_item, fc_amount)
-                    )
-                    write_conn.commit()
-                    write_conn.close()
-                    st.session_state["fc_view_month"] = fc_month
-                    notify(f"등록 완료! [{fc_month}] {fc_item} | {fc_amount:,}원", icon="✅")
-                    st.rerun()
-                else:
-                    st.warning("정산연월(YYYY-MM, 예: 2026-04)과 금액을 올바르게 입력하세요.")
+        if st.button("고정비 등록", type="primary", width="stretch", key="submit_fc_btn"):
+            fc_amount = parse_thousands_input("fc_amount_text")
+            if fc_amount > 0 and re.fullmatch(r"\d{4}-\d{2}", fc_month.strip()):
+                fc_month = fc_month.strip()
+                write_conn = db_connect(DB_FILE)
+                write_conn.execute(
+                    "INSERT INTO monthly_fixedcost (settlement_month, expense_item, total_billed_amount) VALUES (?, ?, ?)",
+                    (fc_month, fc_item, fc_amount)
+                )
+                write_conn.commit()
+                write_conn.close()
+                st.session_state["fc_view_month"] = fc_month
+                st.session_state["_reset_fc_fields"] = True
+                notify(f"등록 완료! [{fc_month}] {fc_item} | {fc_amount:,.0f}원", icon="✅")
+                st.rerun()
+            else:
+                st.warning("정산연월(YYYY-MM, 예: 2026-04)과 금액을 올바르게 입력하세요.")
         
         st.markdown("---")
         st.markdown("##### 등록된 고정비 내역 (체크박스로 삭제 가능)")
@@ -3470,7 +3500,11 @@ with tab2:
     st.markdown("### 🚀 월말 정산(일할계산) 실행")
     st.markdown("아래 버튼을 누르면 위에서 등록한 변동비·고정비를 분석하여, 이번 달 사육 이력이 있는 각 개체에 **실제 사육일수에 비례해(일할계산)** 변동비와 고정비를 배분합니다.")
     
-    target_month = st.text_input("정산 대상 연월 (YYYY-MM)", value=datetime.now().strftime('%Y-%m'), key="calc_target_month")
+    # 위 등록 폼의 정산연월을 바꾸면 여기 값도 따라 바뀐다(settlement_month_input). 처음에는 사용량 등록 연월로 시작.
+    if "calc_target_month" not in st.session_state:
+        st.session_state["calc_target_month"] = (st.session_state.get("usage_month_input")
+                                                 or datetime.now().strftime('%Y-%m'))
+    target_month = st.text_input("정산 대상 연월 (YYYY-MM)", key="calc_target_month")
     
     # 정산 전 요약 미리보기 — 실제 정산과 같은 기준(settlement_cattle)으로 두수와 고정비 몫을 계산한다.
     preview_usage = pd.read_sql("""
@@ -3555,10 +3589,25 @@ with tab2:
     st.markdown("---")
     st.subheader(f"[{target_month}] 개체별 원가 적재 결과 (Cattle_Cost_Log)")
     try:
-        df_log = pd.read_sql("SELECT cattle_id, settlement_month, allocated_variable_cost as 변동비_할당, allocated_fixed_cost as 고정비_할당, (allocated_variable_cost + allocated_fixed_cost) as 당월_추가원가 FROM cattle_cost_log WHERE settlement_month=?", conn, params=(target_month,))
+        # 누적 원가 = 구입비용합계(initial_cost) + 정산 대상 연월까지 적재된 변동비·고정비 합계
+        df_log = pd.read_sql("""
+            SELECT l.cattle_id, l.settlement_month,
+                   l.allocated_variable_cost AS 변동비_할당,
+                   l.allocated_fixed_cost AS 고정비_할당,
+                   (l.allocated_variable_cost + l.allocated_fixed_cost) AS 당월_추가원가,
+                   COALESCE(c.initial_cost, 0) AS 구입원가,
+                   (SELECT SUM(h.allocated_variable_cost + h.allocated_fixed_cost)
+                      FROM cattle_cost_log h
+                     WHERE h.cattle_id = l.cattle_id AND h.settlement_month <= l.settlement_month) AS 누적_사육비
+            FROM cattle_cost_log l
+            LEFT JOIN cattle c ON c.cattle_id = l.cattle_id
+            WHERE l.settlement_month = ?
+            ORDER BY l.cattle_id
+        """, conn, params=(target_month,))
         if df_log.empty:
             st.info("해당 연월에 아직 정산된 내역이 없습니다.")
         else:
+            df_log['누적_원가'] = df_log['구입원가'] + df_log['누적_사육비']
             money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right")
             st.dataframe(
                 df_log, width="stretch", hide_index=True,
@@ -3568,8 +3617,13 @@ with tab2:
                     "변동비_할당": money("변동비 할당 (원)"),
                     "고정비_할당": money("고정비 할당 (원)"),
                     "당월_추가원가": money("당월 추가원가 (원)"),
+                    "구입원가": money("구입원가 (원)"),
+                    "누적_사육비": money("누적 사육비 (원)"),
+                    "누적_원가": money("누적 원가 (원)"),
                 },
             )
+            st.caption("누적 사육비 = 정산 대상 연월까지 적재된 변동비·고정비 합계 · 누적 원가 = 구입원가(구입비용합계) + 누적 사육비")
+            show_table_total(len(df_log), "누적 원가", df_log['누적_원가'].sum())
     except:
         st.info("아직 정산된 내역이 없습니다.")
 
