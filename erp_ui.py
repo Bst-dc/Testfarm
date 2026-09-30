@@ -7,6 +7,7 @@ import glob
 import shutil
 import tempfile
 import html
+import re
 import base64
 from datetime import datetime
 
@@ -315,6 +316,47 @@ def notify(message, icon="✅"):
 def show_pending_toasts():
     for message, icon in st.session_state.pop("_pending_toasts", []):
         st.toast(message, icon=icon)
+
+
+def settlement_month_input(conn, table, label, key, view_key):
+    """등록 폼 위의 '정산연월' 입력칸. 폼 밖에 두어야 값을 바꾸는 즉시 화면이 다시 그려지고,
+    그때 아래 등록 내역 표의 조회 연월(view_key)도 같은 달로 맞춘다.
+    처음에는 내역이 있는 가장 최근 달(없으면 이번 달)로 시작해 아래 표와 맞춘다."""
+    if key not in st.session_state:
+        latest = conn.execute(f"SELECT MAX(settlement_month) FROM {table}").fetchone()[0]
+        st.session_state[key] = st.session_state.get(view_key) or latest or datetime.now().strftime('%Y-%m')
+
+    def _sync():
+        month = str(st.session_state[key]).strip()
+        if re.fullmatch(r"\d{4}-\d{2}", month):
+            st.session_state[view_key] = month
+
+    return st.text_input(label, key=key, on_change=_sync, help="형식: YYYY-MM")
+
+
+def month_view_select(conn, table, key, default_month):
+    """등록 내역 표 위에 '조회 연월' 선택 상자를 그리고 고른 연월을 돌려준다.
+    선택지는 표에 실제로 있는 연월 + 기본 연월(최근 등록한 달)이다.
+    처음 열면 내역이 있는 가장 최근 달을 보여 준다(없으면 기본 연월)."""
+    months = [r[0] for r in conn.execute(
+        f"SELECT DISTINCT settlement_month FROM {table} WHERE settlement_month IS NOT NULL"
+    ).fetchall()]
+    if key not in st.session_state:
+        st.session_state[key] = max(months) if months else default_month
+    months = sorted(set(months) | {default_month, st.session_state[key]}, reverse=True)
+    return st.selectbox("조회 연월", months, key=key)
+
+
+def show_table_total(count, amount_label, amount):
+    """편집표(st.data_editor) 바로 아래에 합계 줄을 붙인다. 표 안에 합계 행을 넣으면
+    저장 시 실제 데이터로 들어가 버리므로 표 밖에 따로 그린다."""
+    st.markdown(
+        f"<div style='display:flex;justify-content:space-between;padding:10px 16px;"
+        f"margin:-4px 0 12px;background:#EAF2ED;border:1px solid #D5E0D9;border-radius:10px;"
+        f"font-weight:800'><span>합계 ({count:,}건)</span>"
+        f"<span>{amount_label} {amount:,.0f} 원</span></div>",
+        unsafe_allow_html=True,
+    )
 import json
 
 # ========== 농장 설정 ==========
@@ -474,7 +516,7 @@ BEGIN
     SET current_stock = current_stock + NEW.quantity,
         moving_avg_price = CASE 
             WHEN current_stock + NEW.quantity > 0 
-            THEN ROUND(((current_stock * moving_avg_price) + NEW.total_amount) / (current_stock + NEW.quantity), 2)
+            THEN ROUND(((current_stock * moving_avg_price) + NEW.total_amount) * 1.0 / (current_stock + NEW.quantity), 2)
             ELSE 0 
         END
     WHERE item_code = NEW.item_code;
@@ -540,6 +582,8 @@ def migrate_schema(db_file):
             except sqlite3.OperationalError:
                 pass
         _migrate_cattle_default_check(conn)
+        _migrate_item_category_check(conn)
+        _migrate_purchase_trigger(conn)
         _repair_dangling_cattle_refs(conn)
         _repair_numpy_int_blobs(conn)
         conn.commit()
@@ -640,6 +684,49 @@ def _table_ddl(table):
     end = SQLITE_DDL.find(");", start)
     return SQLITE_DDL[start:end + 1]
 
+
+def _migrate_purchase_trigger(conn):
+    """예전 매입 트리거는 이동평균단가를 정수끼리 나눠(SQLite 는 정수/정수 = 정수) 소수점이 잘렸다.
+    예: 첫 매입 1,620kg / 652,050원 → 402.5원이어야 하는데 402원으로 저장되어,
+    매입분을 다 써도 산출총액(651,240원)이 매입금액보다 810원 적게 나왔다.
+    트리거는 IF NOT EXISTS 로는 바뀌지 않으므로 지우고 다시 만들고, 이미 잘린 단가도 매입 내역으로 다시 계산한다."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='trg_after_insert_purchase'"
+    ).fetchone()
+    if row and row[0] and "* 1.0 /" in row[0]:
+        return  # 이미 고쳐진 트리거
+    conn.execute("DROP TRIGGER IF EXISTS trg_after_insert_purchase")
+    start = SQLITE_DDL.index("CREATE TRIGGER IF NOT EXISTS trg_after_insert_purchase")
+    end = SQLITE_DDL.index("END;", start) + len("END;")
+    conn.execute(SQLITE_DDL[start:end])
+    # 현재재고는 매입 때만 늘어나므로 이동평균단가 = 매입금액 합계 / 매입수량 합계 (매입 수정 시 재계산과 같은 식)
+    conn.execute("""
+        UPDATE item_master SET moving_avg_price = COALESCE((
+            SELECT ROUND(SUM(total_amount) * 1.0 / SUM(quantity), 2)
+            FROM purchase p WHERE p.item_code = item_master.item_code AND quantity > 0
+        ), moving_avg_price)
+    """)
+
+def _migrate_item_category_check(conn):
+    """예전 DB의 item_master.category CHECK 제약은 ('사료','조사료','약품') 만 허용해,
+    화면에서 '기타저장품' 을 고르면 품목 등록이 "CHECK constraint failed" 로 거부된다.
+    cattle 과 마찬가지로 표를 새로 만들어 데이터를 옮긴다."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='item_master'"
+    ).fetchone()
+    if not row or not row[0] or "'기타저장품'" in row[0]:
+        return  # 표가 없거나 이미 최신 스키마
+
+    # purchase/monthly_usage/cattle_item_usage_log 의 REFERENCES item_master(...) 와
+    # 매입 트리거 본문이 임시 표 이름으로 따라 바뀌지 않도록 legacy 모드로 RENAME 한다.
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    conn.execute("ALTER TABLE item_master RENAME TO item_master_old_migration")
+    conn.execute(_table_ddl("item_master"))
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(item_master_old_migration)").fetchall()]
+    col_list = ", ".join(columns)
+    conn.execute(f"INSERT INTO item_master ({col_list}) SELECT {col_list} FROM item_master_old_migration")
+    conn.execute("DROP TABLE item_master_old_migration")
+    conn.execute("PRAGMA legacy_alter_table = OFF")
 
 def _repair_dangling_cattle_refs(conn):
     """cattle 표를 다시 만드는 과정에서 다른 표의 REFERENCES cattle(...) 이
@@ -787,10 +874,11 @@ def init_db(farm_name):
     conn.commit()
     conn.close()
 
-def distribute_monthly_costs(db_file, settlement_month):
+def settlement_cattle(conn, settlement_month):
+    """정산월에 배분받을 개체와 각자의 사육일수(rearing_days)를 구한다.
+    정산 실행과 정산 전 미리보기가 같은 기준으로 두수를 세도록 한 곳에 모아 둔다."""
     import calendar
-    from datetime import datetime
-    conn = db_connect(db_file)
+    from datetime import datetime, timedelta
     # status = '사육' 로만 걸러내면 이번 정산월 도중에 출하/폐사한 개체가 통째로 빠지고,
     # 그 개체가 실제로 소비한 사료·고정비 몫이 남은 개체에게 그대로 전가된다.
     # 그래서 상태와 무관하게 "이번 정산월에 하루라도 사육 이력이 겹치는 개체"를 모두 포함시키고,
@@ -802,10 +890,8 @@ def distribute_monthly_costs(db_file, settlement_month):
         AND (closure_date IS NULL OR strftime('%Y-%m', closure_date) >= ?)
     """
     cattle_df = pd.read_sql(query, conn, params=(settlement_month, settlement_month))
-
     if cattle_df.empty:
-        conn.close()
-        return False, "사육 중이거나 정산월에 포함되는 개체가 없습니다."
+        return cattle_df.assign(rearing_days=pd.Series(dtype=int))
 
     year, month = map(int, settlement_month.split('-'))
     last_day = calendar.monthrange(year, month)[1]
@@ -814,7 +900,12 @@ def distribute_monthly_costs(db_file, settlement_month):
 
     def calc_days(row):
         adm = row['admission_date']
-        adm_d = datetime.strptime(str(adm)[:10], '%Y-%m-%d') if pd.notna(adm) and str(adm).strip() else month_start
+        # 입식 당일은 절식하므로 사료·고정비 배분에서 빼고, 입식 다음 날부터 사육일수로 센다.
+        # (예: 4/30 입식 개체는 4월 사육일수 0일 → 4월 정산 대상에서 제외, 5월부터 배분)
+        if pd.notna(adm) and str(adm).strip():
+            adm_d = datetime.strptime(str(adm)[:10], '%Y-%m-%d') + timedelta(days=1)
+        else:
+            adm_d = month_start
         start = max(month_start, adm_d)
 
         # 이번 달 중 출하/폐사(closure_date)했다면 그 날짜까지만 사육일수로 센다.
@@ -828,8 +919,18 @@ def distribute_monthly_costs(db_file, settlement_month):
         return (end - start).days + 1
 
     cattle_df['rearing_days'] = cattle_df.apply(calc_days, axis=1)
-    cattle_df = cattle_df[cattle_df['rearing_days'] > 0]
-    
+    return cattle_df[cattle_df['rearing_days'] > 0]
+
+
+def distribute_monthly_costs(db_file, settlement_month, replace=False):
+    conn = db_connect(db_file)
+    if replace:
+        # 재정산: 이 달에 이미 적재된 배분 내역을 지우고 새로 계산한다.
+        # 아래 적재까지 한 트랜잭션이라, 도중에 실패하면 지운 내역도 함께 되돌아간다.
+        conn.execute("DELETE FROM cattle_item_usage_log WHERE settlement_month = ?", (settlement_month,))
+        conn.execute("DELETE FROM cattle_cost_log WHERE settlement_month = ?", (settlement_month,))
+
+    cattle_df = settlement_cattle(conn, settlement_month)
     if cattle_df.empty:
         conn.close()
         return False, "해당 월에 실제 사육일수가 있는 개체가 없습니다."
@@ -890,6 +991,7 @@ def distribute_monthly_costs(db_file, settlement_month):
         conn.close()
         return True, f"'{settlement_month}' 개체별 일할계산(사육일수 비례) 정산이 완료되었습니다. (총 {len(log_df)}마리 적용)"
     except Exception as e:
+        conn.rollback()
         conn.close()
         return False, f"오류 발생 (이미 정산된 연월일 수 있습니다): {e}"
 
@@ -2932,9 +3034,9 @@ with tab0:
                         write_conn.close()
                         notify(f"품목 '{new_item_name}' ({final_item_code})이 등록되었습니다.", icon="✅")
                         st.rerun()
-                    except sqlite3.IntegrityError:
+                    except sqlite3.IntegrityError as e:
                         write_conn.rollback(); write_conn.close()
-                        st.error("품목 등록 중 오류가 발생했습니다.")
+                        st.error(f"품목 등록 중 오류가 발생했습니다: {e}")
                 else:
                     st.warning("품목명을 입력하세요.")
         
@@ -3123,7 +3225,18 @@ with tab2:
         
         # 시험군 및 품목 목록
         groups_df = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master", conn)
-        items_df2 = pd.read_sql("SELECT item_code, item_name, category, moving_avg_price FROM item_master", conn)
+        # 현재재고(current_stock)는 매입 때만 늘고 사용량 등록으로는 줄지 않으므로,
+        # 남은 수량 = 매입 누계 - 전체 기간 사용량 합계, 남은 금액 = 매입금액 합계 - 산출총액 합계 로 계산한다.
+        items_df2 = pd.read_sql("""
+            SELECT i.item_code, i.item_name, i.category, i.unit, i.moving_avg_price,
+                   COALESCE((SELECT SUM(p.quantity) FROM purchase p WHERE p.item_code = i.item_code), 0) AS purchased,
+                   COALESCE((SELECT SUM(p.total_amount) FROM purchase p WHERE p.item_code = i.item_code), 0) AS purchased_amt,
+                   COALESCE((SELECT SUM(u.total_usage) FROM monthly_usage u WHERE u.item_code = i.item_code), 0) AS used,
+                   COALESCE((SELECT SUM(u.calculated_amount) FROM monthly_usage u WHERE u.item_code = i.item_code), 0) AS used_amt
+            FROM item_master i
+        """, conn)
+        items_df2['remaining'] = items_df2['purchased'] - items_df2['used']
+        items_df2['remaining_amt'] = items_df2['purchased_amt'] - items_df2['used_amt']
         
         if groups_df.empty or items_df2.empty:
             st.info("시험군 또는 품목이 등록되어 있지 않습니다.")
@@ -3131,28 +3244,45 @@ with tab2:
             group_options = {f"{r['test_name']} ({r['test_group_code']})": r['test_group_code'] for _, r in groups_df.iterrows()}
             item_options2 = {f"{r['item_name']} ({r['item_code']}) [{r['category']}]": r['item_code'] for _, r in items_df2.iterrows()}
             
-            # 정산연월은 같은 달에 품목을 여러 번 등록하는 경우가 많아서, 폼이
-            # clear_on_submit 으로 초기화되어도 마지막에 등록한 연월이 유지되도록 한다.
-            if "last_usage_month" not in st.session_state:
-                st.session_state["last_usage_month"] = datetime.now().strftime('%Y-%m')
+            # 정산연월은 폼 밖에 두어 등록 후에도 그대로 유지되고, 바꾸면 아래 내역도 그 달로 바뀐다.
+            usage_month = settlement_month_input(conn, "monthly_usage", "정산연월", "usage_month_input", "usage_view_month")
+
+            # 품목은 폼 밖에서 고르게 해, 바꾸는 즉시 그 품목의 남은 수량이 보이도록 한다.
+            usage_item_label = st.selectbox("사용 품목", list(item_options2.keys()), key="usage_item_sel")
+            sel_item_row = items_df2[items_df2['item_code'] == item_options2[usage_item_label]].iloc[0]
+            sel_unit = sel_item_row['unit'] if pd.notna(sel_item_row['unit']) else ""
+            remaining = float(sel_item_row['remaining'])
+            remaining_amt = float(sel_item_row['remaining_amt'])
+            # 적용단가 = 남은 재고의 평균단가(남은 금액 / 남은 수량). 매입 전체 평균단가를 쓰면
+            # 앞서 싸게(또는 비싸게) 쓴 몫이 반영되지 않아, 다 쓰고 나도 산출총액 합계가 매입금액과 어긋난다.
+            unit_price = round(remaining_amt / remaining, 2) if remaining > 0 else float(sel_item_row['moving_avg_price'])
+            stock_msg = (f"📦 현재 남은 수량 **{remaining:,.1f} {sel_unit}** · 남은 금액 {remaining_amt:,.0f}원 · "
+                         f"적용단가 {unit_price:,.2f}원 "
+                         f"(매입 {float(sel_item_row['purchased']):,.1f} − 사용 등록 {float(sel_item_row['used']):,.1f})")
+            if remaining > 0:
+                st.info(stock_msg)
+            else:
+                st.warning(stock_msg + " — 남은 수량이 없습니다. 매입 등록을 먼저 확인하세요.")
 
             with st.form("add_usage_form", clear_on_submit=True):
-                usage_month = st.text_input("정산연월", value=st.session_state["last_usage_month"], help="형식: YYYY-MM")
                 usage_group_label = st.selectbox("시험군", list(group_options.keys()))
-                usage_item_label = st.selectbox("사용 품목", list(item_options2.keys()))
-                usage_qty = st.number_input("총 사용량 (kg/개)", min_value=0.01, step=1.0, format="%.2f")
+                usage_qty = st.number_input(f"총 사용량 ({sel_unit or 'kg/개'})", min_value=0.01, step=1.0, format="%.2f")
 
                 submitted_usage = st.form_submit_button("사용량 등록", type="primary", width="stretch")
                 if submitted_usage:
-                    if usage_qty > 0 and usage_month:
+                    if usage_qty > 0 and re.fullmatch(r"\d{4}-\d{2}", usage_month.strip()):
+                        usage_month = usage_month.strip()
                         sel_group = group_options[usage_group_label]
                         sel_item = item_options2[usage_item_label]
-                        # 현재 이동평균단가 조회
-                        # (moving_avg_price가 정수값이면 pandas가 numpy.int64로 읽어오는데,
-                        #  sqlite3가 이를 숫자로 인식하지 못하고 그대로 바이너리로 저장해버려
-                        #  float()로 순수 파이썬 숫자로 바꿔서 넘긴다)
-                        avg_price = float(items_df2[items_df2['item_code'] == sel_item]['moving_avg_price'].iloc[0])
-                        calc_amount = round(usage_qty * avg_price, 2)
+                        # (pandas 가 읽은 numpy 숫자는 sqlite3 가 BLOB 으로 저장하므로 float() 로 순수 파이썬 숫자로 넘긴다)
+                        if remaining > 0 and usage_qty >= remaining - 1e-9:
+                            # 남은 재고를 모두 쓰는 경우: 남은 금액을 그대로 배정해 단가 반올림 오차 없이
+                            # 산출총액 합계가 매입금액 합계와 정확히 맞게 한다.
+                            calc_amount = round(remaining_amt + (usage_qty - remaining) * unit_price, 2)
+                            avg_price = round(calc_amount / usage_qty, 2)
+                        else:
+                            avg_price = float(unit_price)
+                            calc_amount = round(usage_qty * avg_price, 2)
 
                         write_conn = db_connect(DB_FILE)
                         write_conn.execute(
@@ -3161,14 +3291,18 @@ with tab2:
                         )
                         write_conn.commit()
                         write_conn.close()
-                        st.session_state["last_usage_month"] = usage_month
-                        notify(f"등록 완료! {usage_group_label} | {usage_item_label} | {usage_qty:,.1f} 사용 | 적용단가 {avg_price:,.0f}원 | 산출액 {calc_amount:,.0f}원", icon="✅")
+                        st.session_state["usage_view_month"] = usage_month
+                        notify(f"등록 완료! {usage_group_label} | {usage_item_label} | {usage_qty:,.1f} 사용 | 적용단가 {avg_price:,.2f}원 | 산출액 {calc_amount:,.0f}원", icon="✅")
+                        if usage_qty > remaining:
+                            notify(f"사용량이 남은 수량보다 많습니다. 남은 수량: {remaining - usage_qty:,.1f} {sel_unit}", icon="⚠️")
                         st.rerun()
                     else:
-                        st.warning("정산연월과 사용량을 올바르게 입력하세요.")
+                        st.warning("정산연월(YYYY-MM, 예: 2026-04)과 사용량을 올바르게 입력하세요.")
         
         st.markdown("---")
         st.markdown("##### 등록된 사용 내역")
+        usage_view_month = month_view_select(conn, "monthly_usage", "usage_view_month",
+                                             st.session_state.get("usage_month_input") or datetime.now().strftime('%Y-%m'))
         df_usage = pd.read_sql("""
             SELECT u.usage_id as ID, u.settlement_month as 정산연월,
                    t.test_name as 시험군, i.item_name as 품목명,
@@ -3177,12 +3311,15 @@ with tab2:
             FROM monthly_usage u
             JOIN testgroup_master t ON u.test_group_code = t.test_group_code
             JOIN item_master i ON u.item_code = i.item_code
-            ORDER BY u.settlement_month DESC, t.test_name
-        """, conn)
+            WHERE u.settlement_month = ?
+            ORDER BY t.test_name
+        """, conn, params=(usage_view_month,))
         df_usage.insert(0, "삭제", False)
 
-        if "usage_editor" in st.session_state:
-            edits = st.session_state["usage_editor"].get("edited_rows", {})
+        # 편집표 키에 연월을 넣어, 달을 바꾸면 이전 달에서 하던 편집이 새 달의 같은 줄에 붙지 않게 한다.
+        usage_editor_key = f"usage_editor_{usage_view_month}"
+        if usage_editor_key in st.session_state:
+            edits = st.session_state[usage_editor_key].get("edited_rows", {})
             for row_idx, changes in edits.items():
                 row_idx = int(row_idx)
                 if row_idx < len(df_usage):
@@ -3191,7 +3328,7 @@ with tab2:
                     if pd.notna(new_qty) and pd.notna(new_price):
                         df_usage.at[row_idx, "산출총액"] = round(float(new_qty) * float(new_price))
             
-            added = st.session_state["usage_editor"].get("added_rows", [])
+            added = st.session_state[usage_editor_key].get("added_rows", [])
             for row in added:
                 qty = row.get("사용량", 0)
                 price = row.get("적용단가", 0)
@@ -3202,8 +3339,8 @@ with tab2:
             width="stretch",
             hide_index=True,
             disabled=["ID", "시험군", "품목명", "산출총액"],
-            num_rows="dynamic",
-            key="usage_editor",
+            num_rows="fixed",  # 행 추가는 위 등록 폼으로만, 삭제는 '삭제' 체크박스로
+            key=usage_editor_key,
             column_config={
                 "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
                 "ID": st.column_config.NumberColumn(width="small"),
@@ -3211,6 +3348,12 @@ with tab2:
                 "적용단가": st.column_config.NumberColumn("적용단가 (원)", format="localized", alignment="right"),
                 "산출총액": st.column_config.NumberColumn("산출총액 (원)", format="localized", alignment="right"),
             },
+        )
+        # 삭제 체크한 행은 빼고, 표에서 고친 값(새로 추가한 행 포함)을 그대로 반영해 합산
+        usage_kept = edited_usage_df[~edited_usage_df["삭제"].fillna(False).astype(bool)]
+        show_table_total(
+            len(usage_kept), "산출총액",
+            pd.to_numeric(usage_kept["산출총액"], errors="coerce").fillna(0).sum(),
         )
 
         if st.button("사용 내역 수정 사항 저장", type="primary", width="stretch"):
@@ -3241,17 +3384,16 @@ with tab2:
     with col_d:
         st.markdown("##### ⚡ 농장 고정비 등록")
 
-        if "last_fc_month" not in st.session_state:
-            st.session_state["last_fc_month"] = datetime.now().strftime('%Y-%m')
+        fc_month = settlement_month_input(conn, "monthly_fixedcost", "정산연월 ", "fc_month_input", "fc_view_month")
 
         with st.form("add_fixedcost_form", clear_on_submit=True):
-            fc_month = st.text_input("정산연월 ", value=st.session_state["last_fc_month"], help="형식: YYYY-MM")
-            fc_item = st.selectbox("지출 항목", ["인건비", "전기세", "시험사양수고비", "CCTV사용료", "우수등급장려금", "기타"])
+            fc_item = st.selectbox("지출 항목", ["인건비", "전기세", "시험사양수고비", "CCTV사용료", "우수등급장려금", "가축보험료", "기타"])
             fc_amount = st.number_input("총 청구금액 (원)", min_value=0, step=10000)
 
             submitted_fc = st.form_submit_button("고정비 등록", type="primary", width="stretch")
             if submitted_fc:
-                if fc_amount > 0 and fc_month:
+                if fc_amount > 0 and re.fullmatch(r"\d{4}-\d{2}", fc_month.strip()):
+                    fc_month = fc_month.strip()
                     write_conn = db_connect(DB_FILE)
                     write_conn.execute(
                         "INSERT INTO monthly_fixedcost (settlement_month, expense_item, total_billed_amount) VALUES (?, ?, ?)",
@@ -3259,20 +3401,23 @@ with tab2:
                     )
                     write_conn.commit()
                     write_conn.close()
-                    st.session_state["last_fc_month"] = fc_month
+                    st.session_state["fc_view_month"] = fc_month
                     notify(f"등록 완료! [{fc_month}] {fc_item} | {fc_amount:,}원", icon="✅")
                     st.rerun()
                 else:
-                    st.warning("정산연월과 금액을 올바르게 입력하세요.")
+                    st.warning("정산연월(YYYY-MM, 예: 2026-04)과 금액을 올바르게 입력하세요.")
         
         st.markdown("---")
         st.markdown("##### 등록된 고정비 내역 (체크박스로 삭제 가능)")
+        fc_view_month = month_view_select(conn, "monthly_fixedcost", "fc_view_month",
+                                          st.session_state["fc_month_input"])
         df_fixed = pd.read_sql("""
             SELECT fixed_cost_id as ID, settlement_month as 정산연월,
                    expense_item as 지출항목, total_billed_amount as 총청구금액
             FROM monthly_fixedcost
-            ORDER BY settlement_month DESC
-        """, conn)
+            WHERE settlement_month = ?
+            ORDER BY fixed_cost_id
+        """, conn, params=(fc_view_month,))
         df_fixed.insert(0, "삭제", False)
         
         edited_fc_df = st.data_editor(
@@ -3280,15 +3425,20 @@ with tab2:
             width="stretch",
             hide_index=True,
             disabled=["ID"],
-            num_rows="dynamic",
-            key="fixedcost_editor",
+            num_rows="fixed",  # 행 추가는 위 등록 폼으로만, 삭제는 '삭제' 체크박스로
+            key=f"fixedcost_editor_{fc_view_month}",
             column_config={
                 "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
                 "ID": st.column_config.NumberColumn(width="small"),
                 "총청구금액": st.column_config.NumberColumn("총청구금액 (원)", format="localized", alignment="right"),
             },
         )
-        
+        fc_kept = edited_fc_df[~edited_fc_df["삭제"].fillna(False).astype(bool)]
+        show_table_total(
+            len(fc_kept), "총청구금액",
+            pd.to_numeric(fc_kept["총청구금액"], errors="coerce").fillna(0).sum(),
+        )
+
         if st.button("고정비 수정 사항 저장", type="primary", width="stretch"):
             write_conn = db_connect(DB_FILE)
             current_ids = edited_fc_df[~edited_fc_df["삭제"]]['ID'].dropna().tolist()
@@ -3322,41 +3472,85 @@ with tab2:
     
     target_month = st.text_input("정산 대상 연월 (YYYY-MM)", value=datetime.now().strftime('%Y-%m'), key="calc_target_month")
     
-    # 정산 전 요약 미리보기
+    # 정산 전 요약 미리보기 — 실제 정산과 같은 기준(settlement_cattle)으로 두수와 고정비 몫을 계산한다.
     preview_usage = pd.read_sql("""
-        SELECT t.test_name as 시험군, SUM(u.calculated_amount) as 변동비_합계
-        FROM monthly_usage u
-        JOIN testgroup_master t ON u.test_group_code = t.test_group_code
-        WHERE u.settlement_month = ?
-        GROUP BY t.test_name
+        SELECT test_group_code, SUM(calculated_amount) as 변동비
+        FROM monthly_usage WHERE settlement_month = ?
+        GROUP BY test_group_code
     """, conn, params=(target_month,))
-    preview_fixed = pd.read_sql("SELECT SUM(total_billed_amount) as 고정비_합계 FROM monthly_fixedcost WHERE settlement_month = ?", conn, params=(target_month,))
-    
-    if not preview_usage.empty or (not preview_fixed.empty and pd.notna(preview_fixed.iloc[0]['고정비_합계'])):
-        st.markdown(f"**[{target_month}] 정산 대상 비용 요약:**")
-        col_p1, col_p2 = st.columns(2)
-        with col_p1:
-            st.dataframe(
-                preview_usage, width="stretch", hide_index=True,
-                column_config={
-                    "변동비_합계": st.column_config.NumberColumn("변동비 합계 (원)", format="localized", alignment="right"),
-                },
-            )
-        with col_p2:
-            fixed_val = preview_fixed.iloc[0]['고정비_합계'] if pd.notna(preview_fixed.iloc[0]['고정비_합계']) else 0
-            variable_val = preview_usage['변동비_합계'].sum() if not preview_usage.empty else 0
-            st.metric("고정비 합계", f"{fixed_val:,.0f} 원",
-                      delta=f"변동비 포함 총 {fixed_val + variable_val:,.0f} 원", delta_color="off", delta_arrow="off")
+    fixed_total = conn.execute(
+        "SELECT COALESCE(SUM(total_billed_amount), 0) FROM monthly_fixedcost WHERE settlement_month = ?",
+        (target_month,),
+    ).fetchone()[0]
+
+    if not preview_usage.empty or fixed_total:
+        preview_cattle = settlement_cattle(conn, target_month)
+        total_days = preview_cattle['rearing_days'].sum()
+        by_group = preview_cattle.groupby('test_group_code').agg(
+            두수=('cattle_id', 'count'), 사육일수=('rearing_days', 'sum'))
+        summary = (
+            by_group.join(preview_usage.set_index('test_group_code'), how='outer')
+            .fillna(0).reset_index()
+            .merge(pd.read_sql("SELECT test_group_code, test_name as 시험군 FROM testgroup_master", conn),
+                   on='test_group_code', how='left')
+        )
+        summary['시험군'] = summary['시험군'].fillna(summary['test_group_code'])
+        # 고정비는 농장 전체 사육일수 비례로 나뉘므로, 시험군 몫도 같은 비율로 미리 계산
+        summary['고정비'] = (fixed_total * summary['사육일수'] / total_days) if total_days else 0.0
+        summary = summary[['시험군', '두수', '변동비', '고정비']]
+        if len(summary) > 1:  # 시험군이 하나뿐이면 전체 행이 같은 숫자의 반복이라 생략
+            summary.loc[len(summary)] = ['전체', summary['두수'].sum(), summary['변동비'].sum(), float(fixed_total)]
+        summary['두수'] = summary['두수'].astype(int)
+        summary['총합계'] = summary['변동비'] + summary['고정비']
+        summary['두당평균'] = (summary['총합계'] / summary['두수'].where(summary['두수'] > 0)).fillna(0)
+
+        st.markdown(f"**[{target_month}] 정산 대상 비용 요약** (입식 당일 제외, 실제 배분 기준 두수)")
+        money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right")
+        st.dataframe(
+            summary.style.apply(
+                lambda r: ['font-weight: 800; background-color: #EAF2ED' if r['시험군'] == '전체' else ''] * len(r),
+                axis=1,
+            ).format({"두수": "{:,} 두", "변동비": "{:,.0f}", "고정비": "{:,.0f}", "총합계": "{:,.0f}", "두당평균": "{:,.0f}"}),
+            width="stretch", hide_index=True,
+            column_config={
+                "두수": st.column_config.TextColumn("정산 두수", alignment="right"),
+                "변동비": money("변동비 합계 (원)"),
+                "고정비": money("고정비 합계 (원)"),
+                "총합계": money("총합계 (원)"),
+                "두당평균": money("두당 평균 (원)"),
+            },
+        )
+        if summary['두수'].iloc[-1] == 0:
+            st.warning("이 달에 사육일수가 있는 개체가 없어 정산할 수 없습니다.")
     else:
         st.info(f"[{target_month}] 에 등록된 사용량·고정비가 없습니다. 정산 전에 위에서 비용을 먼저 등록하세요.")
     
-    if st.button("🚀 정산 실행(일할계산) 및 누적원가 반영", type="primary"):
-        success, msg = distribute_monthly_costs(DB_FILE, target_month)
-        if success:
-            st.success(msg)
-            st.balloons()
-        else:
-            st.error(msg)
+    st.caption("※ 입식 당일은 절식하므로 배분에서 제외하고, 입식 다음 날부터 사육일수로 계산합니다.")
+    settled_count = conn.execute(
+        "SELECT COUNT(*) FROM cattle_cost_log WHERE settlement_month = ?", (target_month,)
+    ).fetchone()[0]
+
+    if settled_count == 0:
+        if st.button("🚀 정산 실행(일할계산) 및 누적원가 반영", type="primary"):
+            success, msg = distribute_monthly_costs(DB_FILE, target_month)
+            if success:
+                st.success(msg)
+                st.balloons()
+            else:
+                st.error(msg)
+    else:
+        st.warning(
+            f"[{target_month}] 은 이미 {settled_count}마리로 정산되어 있습니다. 비용이나 개체 정보를 고쳤다면 "
+            "기존 배분 내역을 지우고 다시 정산하세요. (실행 직전 자동 백업)"
+        )
+        if st.button("🔄 기존 정산 지우고 다시 정산", type="primary"):
+            backup_db(DB_FILE, f"before-resettle-{target_month}")
+            success, msg = distribute_monthly_costs(DB_FILE, target_month, replace=True)
+            if success:
+                notify(f"재정산 완료 — {msg}", icon="✅")
+                st.rerun()
+            else:
+                st.error(msg)
             
     st.markdown("---")
     st.subheader(f"[{target_month}] 개체별 원가 적재 결과 (Cattle_Cost_Log)")
