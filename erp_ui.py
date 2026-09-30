@@ -1,5 +1,5 @@
 import streamlit as st
-import sqlite3
+import db_adapter as sqlite3
 import pandas as pd
 import os
 import io
