@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import html
 import re
+import hashlib
 import base64
 from datetime import datetime
 
@@ -346,6 +347,40 @@ def month_view_select(conn, table, key, default_month):
         st.session_state[key] = max(months) if months else default_month
     months = sorted(set(months) | {default_month, st.session_state[key]}, reverse=True)
     return st.selectbox("조회 연월", months, key=key)
+
+
+def item_entry_table(key, codes, names, columns, info=None, name_label="품목"):
+    """여러 품목/항목을 한 번에 등록하는 입력표. 전체 품목을 줄마다 미리 나열해 두고,
+    이번에 들어온(쓴) 품목 옆에만 숫자를 넣게 한다. 숫자를 넣지 않은 줄은 무시된다.
+    (편집표의 글자 칸에 바로 한글을 치면 첫 글자가 영문으로 들어가는 문제가 있어 숫자만 입력받는다.)
+    columns 는 입력받을 숫자 열 {열 이름: column_config},
+    info 는 참고용으로만 보여 줄 열 {열 이름: (값 목록, column_config)}.
+    반환값은 숫자가 하나라도 들어간 줄만 (코드 열 포함). 등록이 끝나면 reset_item_entry(key) 로 비운다."""
+    info = info or {}
+    ver = st.session_state.setdefault(f"_{key}_ver", 0)
+    df = pd.DataFrame({"코드": list(codes), "항목": list(names)})
+    for col, (values, _) in info.items():
+        df[col] = list(values)
+    for col in columns:
+        df[col] = pd.Series([None] * len(df), dtype="float")
+    # 품목 구성이 바뀌면(품목 추가·삭제) 줄이 달라지므로 편집표 키도 바꾼다.
+    sig = hashlib.md5("|".join(map(str, codes)).encode("utf-8")).hexdigest()[:10]
+    edited = st.data_editor(
+        df, width="stretch", hide_index=True, num_rows="fixed",
+        disabled=["코드", "항목", *info], column_order=["항목", *info, *columns],
+        key=f"{key}_editor_{ver}_{sig}",
+        column_config={
+            "항목": st.column_config.TextColumn(name_label),
+            **{col: cfg for col, (_, cfg) in info.items()},
+            **columns,
+        },
+    )
+    filled = edited[list(columns)].apply(pd.to_numeric, errors="coerce").fillna(0).gt(0).any(axis=1)
+    return edited[filled]
+
+
+def reset_item_entry(key):
+    st.session_state[f"_{key}_ver"] = st.session_state.get(f"_{key}_ver", 0) + 1
 
 
 def show_table_total(count, amount_label, amount):
@@ -1498,6 +1533,9 @@ def generate_overall_report_html(df_all, farm_order, farm_colors):
     )
 
     # 2. 농장별 요약
+    def mort_rate(dead, total):
+        return f"{dead / total * 100:.1f}%" if total else "-"
+
     farm_rows, chart_farms = [], []
     for f in farms:
         d = df[df['농장명'] == f]
@@ -1507,15 +1545,16 @@ def generate_overall_report_html(df_all, farm_order, farm_colors):
             f'<tr><td class="left"><span class="dot" style="background:{esc(farm_colors.get(f, "#4F46E5"))}"></span>{esc(f)}</td>'
             f'<td>{num(len(d))}</td><td>{num((d["상태"] == "사육").sum())}</td>'
             f'<td>{num((d["상태"] == "출하").sum())}</td><td>{num((d["상태"] == "폐사").sum())}</td>'
+            f'<td>{mort_rate(int((d["상태"] == "폐사").sum()), len(d))}</td>'
             f'<td>{num(man(cost))}</td><td>{num(man(avg_won(d["초기원가"])))}</td></tr>'
         )
     farm_table = (
         '<div class="table-wrap"><table class="data-table"><thead><tr>'
         '<th class="left">농장명</th><th>전체 입식 (두)</th><th>현재 사육중 (두)</th>'
-        '<th>누적 출하 (두)</th><th>누적 폐사 (두)</th><th>총 구입비용 (만원)</th><th>두당 평균 (만원)</th>'
+        '<th>누적 출하 (두)</th><th>누적 폐사 (두)</th><th>폐사율</th><th>총 구입비용 (만원)</th><th>두당 평균 (만원)</th>'
         '</tr></thead><tbody>' + "".join(farm_rows) + '</tbody>'
         f'<tfoot><tr><td class="left">합계</td><td>{num(total_cnt)}</td><td>{num(breeding_cnt)}</td>'
-        f'<td>{num(shipped_cnt)}</td><td>{num(dead_cnt)}</td><td>{num(man(total_cost))}</td>'
+        f'<td>{num(shipped_cnt)}</td><td>{num(dead_cnt)}</td><td>{mort_rate(dead_cnt, total_cnt)}</td><td>{num(man(total_cost))}</td>'
         f'<td>{num(man(avg_won(df["초기원가"])))}</td></tr></tfoot></table></div>'
     )
 
@@ -1823,6 +1862,11 @@ if selected_farm == "시험농장 전체 현황":
             총구입비용_만원=('초기원가', lambda x: int(x.sum(skipna=True)) // 10000),
             평균구입금액_만원=('초기원가', lambda x: int(x.mean(skipna=True)) // 10000 if not x.isna().all() else 0)
         ).reset_index()
+        # 폐사율 = 누적 폐사 / 전체 입식
+        farm_summary.insert(
+            farm_summary.columns.get_loc('폐사') + 1, '폐사율',
+            (farm_summary['폐사'] / farm_summary['전체입식'].where(farm_summary['전체입식'] > 0) * 100).fillna(0),
+        )
         st.dataframe(
             farm_summary,
             width="stretch", hide_index=True,
@@ -1832,6 +1876,7 @@ if selected_farm == "시험농장 전체 현황":
                 "사육중": count_col("현재 사육중 (두)"),
                 "출하": count_col("누적 출하 (두)"),
                 "폐사": count_col("누적 폐사 (두)"),
+                "폐사율": st.column_config.NumberColumn("폐사율 (%)", format="%.1f%%", alignment="right"),
                 "총구입비용_만원": money_col("총 구입비용 (만원)"),
                 "평균구입금액_만원": money_col("두당 평균 (만원)"),
             },
@@ -3091,34 +3136,21 @@ with tab0:
         if items_df.empty:
             st.info("먼저 좌측에서 품목을 등록해 주세요.")
         else:
-            item_options = {f"{r['item_name']} ({r['item_code']}) [{r['category']} · {r['unit'] or '단위 미지정'}]": r['item_code'] for _, r in items_df.iterrows()}
             item_units = {r['item_code']: r['unit'] for _, r in items_df.iterrows()}
 
             # 거래명세서 한 장에 여러 품목이 함께 들어오므로, 매입일자는 한 번만 고르고
-            # 품목·수량·금액은 표에 여러 줄로 입력해 한꺼번에 등록한다.
+            # 전체 품목 표에서 들어온 품목 옆에만 수량·금액을 넣어 한꺼번에 등록한다.
             purchase_date = st.date_input("매입일자", key="purchase_date_input")
-            # 등록이 끝나면 키를 바꿔 입력표를 빈 상태로 새로 그린다.
-            purchase_form_ver = st.session_state.setdefault("purchase_form_ver", 0)
-            blank_rows = pd.DataFrame({
-                "품목": pd.Series([None] * 5, dtype="object"),
-                "수량": pd.Series([None] * 5, dtype="float"),
-                "총매입금액": pd.Series([None] * 5, dtype="float"),
-            })
-            purchase_input_df = st.data_editor(
-                blank_rows,
-                width="stretch",
-                hide_index=True,
-                num_rows="dynamic",
-                key=f"purchase_input_editor_{purchase_form_ver}",
-                column_config={
-                    "품목": st.column_config.SelectboxColumn("매입 품목", options=list(item_options.keys()), width="large"),
+            purchase_input_df = item_entry_table(
+                "purchase_entry", items_df['item_code'], items_df['item_name'],
+                {
                     "수량": st.column_config.NumberColumn("매입수량", min_value=0, format="localized", alignment="right"),
                     "총매입금액": st.column_config.NumberColumn("총매입금액 (원)", min_value=0, format="localized", alignment="right"),
                 },
+                info={"단위": (items_df['unit'].fillna(""), st.column_config.TextColumn("단위", width="small"))},
             )
-            st.caption("품목을 고르고 수량·금액을 입력하세요. 빈 줄은 무시되고, 줄이 모자라면 표 아래 빈 칸을 눌러 추가합니다.")
 
-            filled = purchase_input_df.dropna(how="all")
+            filled = purchase_input_df
             if not filled.empty:
                 preview_amt = pd.to_numeric(filled["총매입금액"], errors="coerce").fillna(0).sum()
                 show_table_total(len(filled), "총매입금액", preview_amt)
@@ -3126,21 +3158,19 @@ with tab0:
             if st.button("매입 일괄 등록", type="primary", width="stretch", key="submit_purchase_btn"):
                 problems = []
                 rows_to_insert = []
-                for n, row in enumerate(filled.itertuples(index=False), start=1):
+                for row in filled.itertuples(index=False):
                     qty = float(row.수량) if pd.notna(row.수량) else 0.0
                     amt = float(row.총매입금액) if pd.notna(row.총매입금액) else 0.0
-                    if not row.품목 or row.품목 not in item_options:
-                        problems.append(f"{n}번째 줄: 품목을 고르세요.")
-                    elif qty <= 0 or amt <= 0:
-                        problems.append(f"{n}번째 줄 ({row.품목}): 수량과 금액을 0보다 크게 입력하세요.")
+                    if qty <= 0 or amt <= 0:
+                        problems.append(f"{row.항목}: 수량과 금액을 0보다 크게 입력하세요.")
                     else:
-                        code = item_options[row.품목]
+                        code = row.코드
                         rows_to_insert.append((purchase_date.isoformat(), code, qty, item_units.get(code) or "", amt))
 
                 if problems:
-                    st.warning("등록하지 않았습니다. 아래 줄을 확인하세요.\n\n" + "\n".join(f"- {p}" for p in problems))
+                    st.warning("등록하지 않았습니다. 아래 품목을 확인하세요.\n\n" + "\n".join(f"- {p}" for p in problems))
                 elif not rows_to_insert:
-                    st.warning("등록할 매입 내역을 입력하세요.")
+                    st.warning("들어온 품목 옆에 수량·금액을 입력하세요.")
                 else:
                     # 한 트랜잭션으로 넣어 일부만 들어가는 일이 없게 한다. 재고·이동평균단가는 트리거가 줄마다 갱신.
                     write_conn = db_connect(DB_FILE)
@@ -3152,7 +3182,7 @@ with tab0:
                         write_conn.commit()
                     finally:
                         write_conn.close()
-                    st.session_state["purchase_form_ver"] = purchase_form_ver + 1
+                    reset_item_entry("purchase_entry")
                     total_amt = sum(r[4] for r in rows_to_insert)
                     notify(f"매입 {len(rows_to_insert)}건 등록 완료! ({purchase_date.isoformat()}, 합계 {total_amt:,.0f}원)", icon="✅")
                     st.rerun()
@@ -3265,62 +3295,126 @@ with tab2:
             st.info("시험군 또는 품목이 등록되어 있지 않습니다.")
         else:
             group_options = {f"{r['test_name']} ({r['test_group_code']})": r['test_group_code'] for _, r in groups_df.iterrows()}
-            item_options2 = {f"{r['item_name']} ({r['item_code']}) [{r['category']}]": r['item_code'] for _, r in items_df2.iterrows()}
             
             # 정산연월은 폼 밖에 두어 등록 후에도 그대로 유지되고, 바꾸면 아래 내역도 그 달로 바뀐다.
             usage_month = settlement_month_input(conn, "monthly_usage", "정산연월", "usage_month_input", "usage_view_month")
 
-            # 품목은 폼 밖에서 고르게 해, 바꾸는 즉시 그 품목의 남은 수량이 보이도록 한다.
-            usage_item_label = st.selectbox("사용 품목", list(item_options2.keys()), key="usage_item_sel")
-            sel_item_row = items_df2[items_df2['item_code'] == item_options2[usage_item_label]].iloc[0]
-            sel_unit = sel_item_row['unit'] if pd.notna(sel_item_row['unit']) else ""
-            remaining = float(sel_item_row['remaining'])
-            remaining_amt = float(sel_item_row['remaining_amt'])
+            usage_group_label = st.selectbox("시험군", list(group_options.keys()), key="usage_group_sel")
+
+            # 한 시험군의 여러 품목을 표에 줄줄이 입력해 한 번에 등록한다.
+            # 표에 남은 수량을 함께 보여 줘 재고를 보며 입력할 수 있게 한다.
+            stock_state = {
+                r['item_code']: {
+                    "remaining": float(r['remaining']), "remaining_amt": float(r['remaining_amt']),
+                    "fallback": float(r['moving_avg_price']), "unit": r['unit'] if pd.notna(r['unit']) else "",
+                }
+                for _, r in items_df2.iterrows()
+            }
+            # 품목은 줄마다 직접 골라 넣는다(목록에서 선택). 선택지 이름에 남은 수량·단위를 붙여,
+            # 고른 뒤에도 칸에서 재고를 바로 볼 수 있게 한다.
+            # 주의: st.data_editor 는 넘기는 표(data)가 바뀌면 새 표로 보고 입력한 내용을 지운다.
+            # 그래서 고른 품목에 맞춰 표 안의 값을 채우지 않고, 표는 항상 같은 빈 표를 넘긴다.
+            usage_name_to_code = {}
+            for _, r in items_df2.iterrows():
+                unit = stock_state[r['item_code']]["unit"]
+                label = f"{r['item_name']} · 남은 {float(r['remaining']):,.1f} {unit}".rstrip()
+                if label in usage_name_to_code:  # 이름·재고가 같은 품목이 겹치면 코드로 구분
+                    label = f"{r['item_name']} ({r['item_code']}) · 남은 {float(r['remaining']):,.1f} {unit}".rstrip()
+                usage_name_to_code[label] = r['item_code']
+            usage_ver = st.session_state.setdefault("_usage_entry_ver", 0)
+            usage_edited = st.data_editor(
+                pd.DataFrame({
+                    "품목": pd.Series([None] * 8, dtype="object"),
+                    "사용량": pd.Series([None] * 8, dtype="float"),
+                }),
+                width="stretch",
+                hide_index=True,
+                num_rows="dynamic",
+                key=f"usage_entry_editor_{usage_ver}",
+                column_config={
+                    "품목": st.column_config.SelectboxColumn("품목 (남은 수량)", options=list(usage_name_to_code.keys()), width="large"),
+                    "사용량": st.column_config.NumberColumn("사용량", min_value=0, format="localized", alignment="right"),
+                },
+            )
+            st.caption("품목 칸을 눌러 목록에서 고르고 사용량을 입력하세요. 빈 줄은 무시되고, 줄이 모자라면 표 아래 빈 칸을 눌러 추가합니다.")
+            usage_blank_item = usage_edited[usage_edited["품목"].isna() & usage_edited["사용량"].fillna(0).gt(0)]
+            usage_input_df = usage_edited[usage_edited["품목"].notna()].copy()
+            usage_input_df["코드"] = usage_input_df["품목"].map(usage_name_to_code)
+            usage_input_df["항목"] = usage_input_df["품목"].str.split(" · ").str[0]
+
+            # 줄마다 적용단가·산출액을 미리 계산한다. 같은 품목이 여러 줄이면 앞 줄 사용분을 빼고 이어서 계산.
             # 적용단가 = 남은 재고의 평균단가(남은 금액 / 남은 수량). 매입 전체 평균단가를 쓰면
             # 앞서 싸게(또는 비싸게) 쓴 몫이 반영되지 않아, 다 쓰고 나도 산출총액 합계가 매입금액과 어긋난다.
-            unit_price = round(remaining_amt / remaining, 2) if remaining > 0 else float(sel_item_row['moving_avg_price'])
-            stock_msg = (f"📦 현재 남은 수량 **{remaining:,.1f} {sel_unit}** · 남은 금액 {remaining_amt:,.0f}원 · "
-                         f"적용단가 {unit_price:,.2f}원 "
-                         f"(매입 {float(sel_item_row['purchased']):,.1f} − 사용 등록 {float(sel_item_row['used']):,.1f})")
-            if remaining > 0:
-                st.info(stock_msg)
-            else:
-                st.warning(stock_msg + " — 남은 수량이 없습니다. 매입 등록을 먼저 확인하세요.")
+            usage_problems, usage_rows, preview = [], [], []
+            if not usage_blank_item.empty:
+                usage_problems.append(f"사용량만 있고 품목이 비어 있는 줄이 {len(usage_blank_item)}개 있습니다. 품목을 고르세요.")
+            for row in usage_input_df.itertuples(index=False):
+                qty = float(row.사용량) if pd.notna(row.사용량) else 0.0
+                if qty <= 0:
+                    usage_problems.append(f"{row.항목}: 사용량을 0보다 크게 입력하세요.")
+                    continue
+                code = row.코드
+                st_ = stock_state[code]
+                rem, rem_amt = st_["remaining"], st_["remaining_amt"]
+                unit_price = round(rem_amt / rem, 2) if rem > 0 else st_["fallback"]
+                if rem > 0 and qty >= rem - 1e-9:
+                    # 남은 재고를 모두 쓰는 경우: 남은 금액을 그대로 배정해 반올림 오차 없이 매입금액과 맞춘다.
+                    amount = round(rem_amt + (qty - rem) * unit_price, 2)
+                    price = round(amount / qty, 2)
+                else:
+                    price = float(unit_price)
+                    amount = round(qty * price, 2)
+                st_["remaining"], st_["remaining_amt"] = rem - qty, rem_amt - amount
+                usage_rows.append((code, qty, price, amount))
+                preview.append({
+                    "품목": row.항목, "현재 남은 수량": rem, "사용량": qty, "적용단가": price, "산출액": amount,
+                    "등록 후 남은 수량": st_["remaining"], "단위": st_["unit"],
+                })
 
-            with st.form("add_usage_form", clear_on_submit=True):
-                usage_group_label = st.selectbox("시험군", list(group_options.keys()))
-                usage_qty = st.number_input(f"총 사용량 ({sel_unit or 'kg/개'})", min_value=0.01, step=1.0, format="%.2f")
+            if preview:
+                money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right")
+                st.dataframe(
+                    pd.DataFrame(preview), width="stretch", hide_index=True,
+                    column_config={
+                        "현재 남은 수량": st.column_config.NumberColumn(format="localized", alignment="right"),
+                        "사용량": st.column_config.NumberColumn(format="localized", alignment="right"),
+                        "적용단가": money("적용단가 (원)"),
+                        "산출액": money("산출액 (원)"),
+                        "등록 후 남은 수량": st.column_config.NumberColumn(format="localized", alignment="right"),
+                    },
+                )
+                show_table_total(len(preview), "산출액", sum(r[3] for r in usage_rows))
+                short = [p_ for p_ in preview if p_["등록 후 남은 수량"] < -1e-9]
+                if short:
+                    st.warning("남은 수량보다 많이 쓰는 품목이 있습니다: " +
+                               ", ".join(f"{p_['품목']} ({p_['등록 후 남은 수량']:,.1f} {p_['단위']})" for p_ in short) +
+                               " — 매입 등록이 빠지지 않았는지 확인하세요.")
 
-                submitted_usage = st.form_submit_button("사용량 등록", type="primary", width="stretch")
-                if submitted_usage:
-                    if usage_qty > 0 and re.fullmatch(r"\d{4}-\d{2}", usage_month.strip()):
-                        usage_month = usage_month.strip()
-                        sel_group = group_options[usage_group_label]
-                        sel_item = item_options2[usage_item_label]
-                        # (pandas 가 읽은 numpy 숫자는 sqlite3 가 BLOB 으로 저장하므로 float() 로 순수 파이썬 숫자로 넘긴다)
-                        if remaining > 0 and usage_qty >= remaining - 1e-9:
-                            # 남은 재고를 모두 쓰는 경우: 남은 금액을 그대로 배정해 단가 반올림 오차 없이
-                            # 산출총액 합계가 매입금액 합계와 정확히 맞게 한다.
-                            calc_amount = round(remaining_amt + (usage_qty - remaining) * unit_price, 2)
-                            avg_price = round(calc_amount / usage_qty, 2)
-                        else:
-                            avg_price = float(unit_price)
-                            calc_amount = round(usage_qty * avg_price, 2)
-
-                        write_conn = db_connect(DB_FILE)
-                        write_conn.execute(
+            if st.button("사용량 일괄 등록", type="primary", width="stretch", key="submit_usage_btn"):
+                if not re.fullmatch(r"\d{4}-\d{2}", usage_month.strip()):
+                    st.warning("정산연월(YYYY-MM, 예: 2026-04)을 올바르게 입력하세요.")
+                elif usage_problems:
+                    st.warning("등록하지 않았습니다. 아래 품목을 확인하세요.\n\n" + "\n".join(f"- {p_}" for p_ in usage_problems))
+                elif not usage_rows:
+                    st.warning("사용한 품목 옆에 사용량을 입력하세요.")
+                else:
+                    usage_month = usage_month.strip()
+                    sel_group = group_options[usage_group_label]
+                    write_conn = db_connect(DB_FILE)
+                    try:
+                        # 한 트랜잭션으로 넣어 일부만 들어가는 일이 없게 한다.
+                        write_conn.executemany(
                             "INSERT INTO monthly_usage (settlement_month, test_group_code, item_code, total_usage, applied_price, calculated_amount) VALUES (?, ?, ?, ?, ?, ?)",
-                            (usage_month, sel_group, sel_item, usage_qty, avg_price, calc_amount)
+                            [(usage_month, sel_group, code, qty, price, amount) for code, qty, price, amount in usage_rows],
                         )
                         write_conn.commit()
+                    finally:
                         write_conn.close()
-                        st.session_state["usage_view_month"] = usage_month
-                        notify(f"등록 완료! {usage_group_label} | {usage_item_label} | {usage_qty:,.1f} 사용 | 적용단가 {avg_price:,.2f}원 | 산출액 {calc_amount:,.0f}원", icon="✅")
-                        if usage_qty > remaining:
-                            notify(f"사용량이 남은 수량보다 많습니다. 남은 수량: {remaining - usage_qty:,.1f} {sel_unit}", icon="⚠️")
-                        st.rerun()
-                    else:
-                        st.warning("정산연월(YYYY-MM, 예: 2026-04)과 사용량을 올바르게 입력하세요.")
+                    st.session_state["usage_view_month"] = usage_month
+                    st.session_state["_usage_entry_ver"] = usage_ver + 1
+                    notify(f"사용량 {len(usage_rows)}건 등록 완료! [{usage_month}] {usage_group_label} | "
+                           f"산출액 합계 {sum(r[3] for r in usage_rows):,.0f}원", icon="✅")
+                    st.rerun()
         
         st.markdown("---")
         st.markdown("##### 등록된 사용 내역")
@@ -3409,33 +3503,38 @@ with tab2:
 
         fc_month = settlement_month_input(conn, "monthly_fixedcost", "정산연월 ", "fc_month_input", "fc_view_month")
 
-        # 청구금액에 천단위 콤마를 보여 주려고 number_input 대신 text_input + on_change 콜백을 쓴다.
-        # 콜백은 st.form 안에서는 제출 전까지 돌지 않으므로 이 입력은 폼 없이 둔다.
-        if st.session_state.pop("_reset_fc_fields", False):
-            st.session_state["fc_amount_text"] = ""
-        fc_item = st.selectbox("지출 항목", ["인건비", "전기세", "시험사양수고비", "CCTV사용료", "우수등급장려금", "가축보험료", "기타"], key="fc_item_sel")
-        st.text_input(
-            "총 청구금액 (원)", key="fc_amount_text", placeholder="예: 1,500,000",
-            on_change=format_thousands_input, args=("fc_amount_text",),
+        # 여러 지출 항목을 한 번에 등록한다. 금액 칸은 천단위 콤마로 표시된다.
+        fc_items = ["인건비", "전기세", "시험사양수고비", "CCTV사용료", "우수등급장려금", "가축보험료", "기타"]
+        fc_input_df = item_entry_table(
+            "fc_entry", fc_items, fc_items,
+            {"금액": st.column_config.NumberColumn("총 청구금액 (원)", min_value=0, format="localized", alignment="right")},
+            name_label="지출 항목",
         )
+        if not fc_input_df.empty:
+            show_table_total(len(fc_input_df), "청구금액",
+                             pd.to_numeric(fc_input_df["금액"], errors="coerce").fillna(0).sum())
 
-        if st.button("고정비 등록", type="primary", width="stretch", key="submit_fc_btn"):
-            fc_amount = parse_thousands_input("fc_amount_text")
-            if fc_amount > 0 and re.fullmatch(r"\d{4}-\d{2}", fc_month.strip()):
+        if st.button("고정비 일괄 등록", type="primary", width="stretch", key="submit_fc_btn"):
+            fc_rows = [(r.항목, float(r.금액)) for r in fc_input_df.itertuples(index=False)]
+            if not re.fullmatch(r"\d{4}-\d{2}", fc_month.strip()):
+                st.warning("정산연월(YYYY-MM, 예: 2026-04)을 올바르게 입력하세요.")
+            elif not fc_rows:
+                st.warning("청구된 지출 항목 옆에 금액을 입력하세요.")
+            else:
                 fc_month = fc_month.strip()
                 write_conn = db_connect(DB_FILE)
-                write_conn.execute(
-                    "INSERT INTO monthly_fixedcost (settlement_month, expense_item, total_billed_amount) VALUES (?, ?, ?)",
-                    (fc_month, fc_item, fc_amount)
-                )
-                write_conn.commit()
-                write_conn.close()
+                try:
+                    write_conn.executemany(
+                        "INSERT INTO monthly_fixedcost (settlement_month, expense_item, total_billed_amount) VALUES (?, ?, ?)",
+                        [(fc_month, item, amt) for item, amt in fc_rows],
+                    )
+                    write_conn.commit()
+                finally:
+                    write_conn.close()
                 st.session_state["fc_view_month"] = fc_month
-                st.session_state["_reset_fc_fields"] = True
-                notify(f"등록 완료! [{fc_month}] {fc_item} | {fc_amount:,.0f}원", icon="✅")
+                reset_item_entry("fc_entry")
+                notify(f"고정비 {len(fc_rows)}건 등록 완료! [{fc_month}] 합계 {sum(a for _, a in fc_rows):,.0f}원", icon="✅")
                 st.rerun()
-            else:
-                st.warning("정산연월(YYYY-MM, 예: 2026-04)과 금액을 올바르게 입력하세요.")
         
         st.markdown("---")
         st.markdown("##### 등록된 고정비 내역 (체크박스로 삭제 가능)")
@@ -3500,11 +3599,27 @@ with tab2:
     st.markdown("### 🚀 월말 정산(일할계산) 실행")
     st.markdown("아래 버튼을 누르면 위에서 등록한 변동비·고정비를 분석하여, 이번 달 사육 이력이 있는 각 개체에 **실제 사육일수에 비례해(일할계산)** 변동비와 고정비를 배분합니다.")
     
+    # 정산 대상 연월은 비용(사용량·고정비)이 등록됐거나 이미 정산된 연월 중에서 고른다.
+    # 직접 입력하게 두면 비용이 없는 달(예: 이번 달)이 그대로 정산되는 실수가 생긴다.
     # 위 등록 폼의 정산연월을 바꾸면 여기 값도 따라 바뀐다(settlement_month_input). 처음에는 사용량 등록 연월로 시작.
+    calc_months = sorted({r[0] for r in conn.execute("""
+        SELECT settlement_month FROM monthly_usage
+        UNION SELECT settlement_month FROM monthly_fixedcost
+        UNION SELECT settlement_month FROM cattle_cost_log
+    """).fetchall() if r[0] and re.fullmatch(r"\d{4}-\d{2}", str(r[0]))}, reverse=True)
+    if not calc_months:
+        # 아래 탭들이 계속 그려져야 하므로 st.stop() 대신 이번 달 하나만 선택지로 둔다.
+        st.info("비용(사용량·고정비)이 등록된 연월이 없습니다. 위에서 비용을 먼저 등록하세요.")
+        calc_months = [datetime.now().strftime('%Y-%m')]
+    settled_months_set = {r[0] for r in conn.execute("SELECT DISTINCT settlement_month FROM cattle_cost_log").fetchall()}
     if "calc_target_month" not in st.session_state:
-        st.session_state["calc_target_month"] = (st.session_state.get("usage_month_input")
-                                                 or datetime.now().strftime('%Y-%m'))
-    target_month = st.text_input("정산 대상 연월 (YYYY-MM)", key="calc_target_month")
+        start_month = st.session_state.get("usage_month_input")
+        st.session_state["calc_target_month"] = start_month if start_month in calc_months else calc_months[0]
+    elif st.session_state["calc_target_month"] not in calc_months:
+        # 위에서 비용이 없는 달로 바꾼 경우: 선택지에 없으니 가장 최근 등록 연월로 둔다.
+        st.session_state["calc_target_month"] = calc_months[0]
+    target_month = st.selectbox("정산 대상 연월", calc_months, key="calc_target_month",
+                                format_func=lambda m: f"{m}  (정산 완료)" if m in settled_months_set else m)
     
     # 정산 전 요약 미리보기 — 실제 정산과 같은 기준(settlement_cattle)으로 두수와 고정비 몫을 계산한다.
     preview_usage = pd.read_sql("""
@@ -3585,7 +3700,21 @@ with tab2:
                 st.rerun()
             else:
                 st.error(msg)
-            
+
+        # 잘못 정산한 달(예: 비용이 없는 달)은 배분 내역을 통째로 지운다. 등록된 비용(사용량·고정비)은 그대로 둔다.
+        with st.expander(f"🗑️ [{target_month}] 정산 취소 (배분 내역 삭제)"):
+            st.caption("이 달에 개체별로 배분된 원가 기록만 지웁니다. 등록된 사용량·고정비는 지우지 않으며, 실행 직전 자동 백업됩니다.")
+            confirm_cancel = st.checkbox(f"[{target_month}] 정산 {settled_count}마리 배분 내역을 삭제합니다", key=f"cancel_settle_confirm_{target_month}")
+            if st.button("정산 취소", disabled=not confirm_cancel, key=f"cancel_settle_btn_{target_month}"):
+                backup_db(DB_FILE, f"before-cancel-settle-{target_month}")
+                write_conn = db_connect(DB_FILE)
+                write_conn.execute("DELETE FROM cattle_item_usage_log WHERE settlement_month = ?", (target_month,))
+                write_conn.execute("DELETE FROM cattle_cost_log WHERE settlement_month = ?", (target_month,))
+                write_conn.commit()
+                write_conn.close()
+                notify(f"[{target_month}] 정산을 취소했습니다. (배분 내역 {settled_count}건 삭제)", icon="🗑️")
+                st.rerun()
+
     st.markdown("---")
     st.subheader(f"[{target_month}] 개체별 원가 적재 결과 (Cattle_Cost_Log)")
     try:
