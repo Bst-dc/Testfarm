@@ -1,5 +1,7 @@
 import streamlit as st
-import db_adapter as sqlite3
+import sqlite3 as _sqlite3
+import db_adapter
+from db_schema import SQLITE_DDL, PG_DDL, DB_TABLES
 import pandas as pd
 import os
 import io
@@ -63,7 +65,14 @@ def parse_thousands_input(key):
 #   - 로컬 윈도우 : 기본값 (사용자 폴더)/시험농장DB
 #   - 클라우드    : 환경변수 ERP_DB_DIR 에 볼륨 경로(/data) 지정
 # 구글 드라이브 폴더에는 두지 않는다. 동기화 프로그램이 파일을 잠가 잠금 오류와 손상을 일으킨다.
-DB_DIR = os.environ.get("ERP_DB_DIR") or os.path.join(os.path.expanduser("~"), "시험농장DB")
+#
+# DATABASE_URL(secrets.toml 또는 환경변수)이 있으면 SQLite 파일 대신 Supabase(PostgreSQL)를 쓴다.
+# 이때 농장 DB 파일 경로(erp_sunsan.db)는 스키마 이름(sunsan)을 정하는 용도로만 쓰이고 실제 파일은 없다.
+# 그래서 DB가 있는지는 os.path.exists 가 아니라 db_exists() 로 확인해야 한다.
+USE_PG = db_adapter.enabled()
+sqlite3 = db_adapter if USE_PG else _sqlite3
+
+DB_DIR =os.environ.get("ERP_DB_DIR") or os.path.join(os.path.expanduser("~"), "시험농장DB")
 BACKUP_DIR = os.path.join(DB_DIR, "backup")
 os.makedirs(BACKUP_DIR, exist_ok=True)
 BACKUP_KEEP = 30  # 농장별 보관 백업 개수
@@ -439,125 +448,18 @@ def save_farms(farms_dict):
 
 FARM_CONFIG = load_farms()
 
-SQLITE_DDL = """
-CREATE TABLE IF NOT EXISTS testgroup_master (
-    test_group_code TEXT PRIMARY KEY,
-    test_name TEXT NOT NULL,
-    start_date DATE NOT NULL,
-    end_date DATE,
-    location_mapping TEXT
-);
+_PG_SCHEMA_CHECKED = set()  # 프로세스당 농장별로 한 번만 스키마를 점검한다 (매 실행마다 왕복하지 않도록)
 
-CREATE TABLE IF NOT EXISTS cattle (
-    cattle_id TEXT PRIMARY KEY,
-    kpn TEXT,
-    birth_date DATE,
-    test_group_code TEXT REFERENCES testgroup_master(test_group_code),
-    status TEXT CHECK (status IN ('사육', '출하', '폐사')) NOT NULL DEFAULT '사육',
-    admission_date DATE,
-    closure_date DATE,
-    market_name TEXT,
-    building TEXT,
-    pen_number INTEGER,
-    feed_type TEXT CHECK (feed_type IN ('표준', '제한형', '증량형')) DEFAULT '표준',
-    roughage_grade TEXT CHECK (roughage_grade IN ('표준', '고급', '저급')) DEFAULT '표준',
-    castration_date DATE,
-    calf_price NUMERIC(12, 2) NOT NULL DEFAULT 0,
-    commission_fee NUMERIC(12, 2) NOT NULL DEFAULT 0,
-    transport_fee NUMERIC(12, 2) NOT NULL DEFAULT 0,
-    initial_cost NUMERIC(12, 2) NOT NULL DEFAULT 0,
-    insurance_value NUMERIC(12, 2) DEFAULT 0,
-    insurance_premium NUMERIC(12, 2) DEFAULT 0,
-    accident_date DATE,
-    insurance_claim NUMERIC(12, 2) DEFAULT 0,
-    memo TEXT
-);
 
-CREATE TABLE IF NOT EXISTS disease_record (
-    record_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    cattle_id TEXT REFERENCES cattle(cattle_id),
-    onset_date DATE NOT NULL,
-    symptom TEXT,
-    medicine1 TEXT,
-    dosage1 NUMERIC(10, 2),
-    medicine2 TEXT,
-    dosage2 NUMERIC(10, 2),
-    medicine3 TEXT,
-    dosage3 NUMERIC(10, 2),
-    veterinarian TEXT,
-    recovery_date DATE,
-    prescription_no TEXT,
-    memo TEXT
-);
-
-CREATE TABLE IF NOT EXISTS item_master (
-    item_code TEXT PRIMARY KEY,
-    item_name TEXT NOT NULL,
-    category TEXT CHECK (category IN ('사료', '조사료', '약품', '기타저장품')) NOT NULL,
-    unit TEXT,
-    current_stock NUMERIC(10, 2) NOT NULL DEFAULT 0,
-    moving_avg_price NUMERIC(12, 2) NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS purchase (
-    purchase_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    purchase_date DATE NOT NULL,
-    item_code TEXT REFERENCES item_master(item_code),
-    quantity NUMERIC(10, 2) NOT NULL,
-    unit TEXT,
-    total_amount NUMERIC(12, 2) NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS monthly_usage (
-    usage_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    settlement_month TEXT NOT NULL,
-    test_group_code TEXT REFERENCES testgroup_master(test_group_code),
-    item_code TEXT REFERENCES item_master(item_code),
-    total_usage NUMERIC(10, 2) NOT NULL,
-    applied_price NUMERIC(12, 2) NOT NULL,
-    calculated_amount NUMERIC(12, 2) NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS monthly_fixedcost (
-    fixed_cost_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    settlement_month TEXT NOT NULL,
-    expense_item TEXT NOT NULL,
-    total_billed_amount NUMERIC(12, 2) NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS cattle_cost_log (
-    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    cattle_id TEXT REFERENCES cattle(cattle_id),
-    settlement_month TEXT NOT NULL,
-    allocated_variable_cost NUMERIC(12, 2) NOT NULL DEFAULT 0,
-    allocated_fixed_cost NUMERIC(12, 2) NOT NULL DEFAULT 0,
-    UNIQUE (cattle_id, settlement_month)
-);
-
-CREATE TABLE IF NOT EXISTS cattle_item_usage_log (
-    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    cattle_id TEXT REFERENCES cattle(cattle_id),
-    settlement_month TEXT NOT NULL,
-    item_code TEXT REFERENCES item_master(item_code),
-    allocated_usage NUMERIC(10, 2) NOT NULL,
-    allocated_amount NUMERIC(12, 2) NOT NULL,
-    UNIQUE (cattle_id, settlement_month, item_code)
-);
-
-CREATE TRIGGER IF NOT EXISTS trg_after_insert_purchase
-AFTER INSERT ON purchase
-FOR EACH ROW
-BEGIN
-    UPDATE item_master
-    SET current_stock = current_stock + NEW.quantity,
-        moving_avg_price = CASE 
-            WHEN current_stock + NEW.quantity > 0 
-            THEN ROUND(((current_stock * moving_avg_price) + NEW.total_amount) * 1.0 / (current_stock + NEW.quantity), 2)
-            ELSE 0 
-        END
-    WHERE item_code = NEW.item_code;
-END;
-"""
+def _migrate_schema_pg(db_file):
+    if db_file in _PG_SCHEMA_CHECKED:
+        return
+    db_adapter.ensure_schema(db_file, PG_DDL, extra_sql=[
+        "ALTER TABLE testgroup_master ADD COLUMN IF NOT EXISTS location_mapping TEXT",
+        "ALTER TABLE purchase ADD COLUMN IF NOT EXISTS unit TEXT",
+        "ALTER TABLE item_master ADD COLUMN IF NOT EXISTS unit TEXT",
+    ])
+    _PG_SCHEMA_CHECKED.add(db_file)
 
 # ========== DB 연결 관리 ==========
 # Streamlit은 버튼/폼을 누를 때마다 스크립트를 처음부터 다시 실행한다.
@@ -574,11 +476,19 @@ def _conn_registry():
 def db_connect(db_path):
     # check_same_thread=False: 다음 실행(다른 스레드)에서 정리할 수 있도록 허용
     conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
-    conn.execute("PRAGMA busy_timeout = 30000")
-    conn.execute("PRAGMA journal_mode = WAL")  # 읽는 중에도 쓰기가 막히지 않는다
-    conn.execute("PRAGMA foreign_keys = ON")   # 스키마에 선언된 참조 무결성을 실제로 적용
+    if not USE_PG:  # SQLite 전용 설정 (Postgres 는 참조 무결성이 항상 켜져 있다)
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA journal_mode = WAL")  # 읽는 중에도 쓰기가 막히지 않는다
+        conn.execute("PRAGMA foreign_keys = ON")   # 스키마에 선언된 참조 무결성을 실제로 적용
     _conn_registry().append(conn)
     return conn
+
+
+def db_exists(db_file):
+    """농장 DB가 만들어져 있는지. Supabase 모드에서는 파일이 없으므로 스키마에 표가 있는지 본다."""
+    if USE_PG:
+        return db_adapter.database_exists(db_file)
+    return os.path.exists(db_file)
 
 
 def close_stale_connections():
@@ -601,6 +511,9 @@ def migrate_schema(db_file):
     pandas.to_sql() 이 PRIMARY KEY/UNIQUE 제약 없이 즉석에서 표를 만들어버려
     새로 만든 DB와 스키마가 미묘하게 달라진다.
     """
+    if USE_PG:
+        _migrate_schema_pg(db_file)
+        return
     if not os.path.exists(db_file):
         return
     conn = sqlite3.connect(db_file, timeout=30)
@@ -798,18 +711,23 @@ def backup_db(db_file, reason="auto", dest_dir=None):
 
     dest_dir 을 지정하면 그 폴더에 저장하고, 오래된 백업 정리는 하지 않는다.
     """
-    if not os.path.exists(db_file):
+    if not db_exists(db_file):
         return None
     name = os.path.splitext(os.path.basename(db_file))[0]
     out_dir = dest_dir or BACKUP_DIR
     os.makedirs(out_dir, exist_ok=True)
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")  # 생성 날짜·시간을 파일명에 넣는다
     out = os.path.join(out_dir, "%s_%s_%s.db" % (name, stamp, reason))
-    conn = db_connect(db_file)
-    try:
-        conn.execute("VACUUM INTO ?", (out,))
-    finally:
-        conn.close()
+    if USE_PG:
+        # Supabase 데이터를 SQLite 파일로 내보낸다. 이 파일은 '백업 파일로 복원'에 그대로 쓸 수 있다.
+        db_adapter.export_to_sqlite(db_file, out, SQLITE_DDL, DB_TABLES,
+                                    trigger_names=["trg_after_insert_purchase"])
+    else:
+        conn = db_connect(db_file)
+        try:
+            conn.execute("VACUUM INTO ?", (out,))
+        finally:
+            conn.close()
     if dest_dir is None:
         _prune_backups(name)
     return out
@@ -843,7 +761,7 @@ def restore_db(db_file, uploaded_bytes):
     with open(tmp_path, "wb") as fh:
         fh.write(uploaded_bytes)
     try:
-        probe = sqlite3.connect(tmp_path)
+        probe = _sqlite3.connect(tmp_path)  # 업로드 파일은 Supabase 모드에서도 SQLite 파일이다
         if probe.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             probe.close()
             return False, "파일이 손상되었습니다. 다른 백업 파일을 사용하세요."
@@ -853,9 +771,13 @@ def restore_db(db_file, uploaded_bytes):
         if missing:
             return False, "이 시스템의 DB 파일이 아닙니다. (없는 표: %s)" % ", ".join(sorted(missing))
 
-        if os.path.exists(db_file):
+        if db_exists(db_file):
             backup_db(db_file, "before-restore")
         close_stale_connections()
+        if USE_PG:
+            db_adapter.import_from_sqlite(db_file, tmp_path, PG_DDL, DB_TABLES,
+                                          trigger_tables=["purchase"])
+            return True, "복원이 완료되었습니다."
         for suffix in ("-wal", "-shm"):
             leftover = db_file + suffix
             if os.path.exists(leftover):
@@ -894,6 +816,11 @@ def init_db(farm_name):
 
     # 파일을 지우기 전에 열려 있는 연결을 먼저 끊어야 잠금이 풀린다.
     close_stale_connections()
+
+    if USE_PG:
+        db_adapter.reset_database(db_file, PG_DDL)
+        _PG_SCHEMA_CHECKED.add(db_file)
+        return
 
     if os.path.exists(db_file):
         try:
@@ -1046,7 +973,7 @@ _REPORT_GROUP_PALETTE = [
 
 def list_settled_months(db_file):
     """cattle_cost_log 에 이미 정산 기록이 있는 연월 목록 (최신순)."""
-    if not os.path.exists(db_file):
+    if not db_exists(db_file):
         return []
     conn = db_connect(db_file)
     try:
@@ -1730,7 +1657,7 @@ def cattle_reset_preview(db_file):
         ("개체별 품목 사용 내역", "cattle_item_usage_log"),
     ]
     rows = []
-    if not os.path.exists(db_file):
+    if not db_exists(db_file):
         return rows
     conn = db_connect(db_file)
     try:
@@ -1813,7 +1740,7 @@ if selected_farm == "시험농장 전체 현황":
     
     for farm_nm, farm_cfg_info in FARM_CONFIG.items():
         f_db = farm_cfg_info["db_file"]
-        if os.path.exists(f_db):
+        if db_exists(f_db):
             try:
                 f_conn = sqlite3.connect(f_db)
                 df_f = pd.read_sql("SELECT cattle_id as 개체번호, status as 상태, admission_date as 입식일, castration_date as 거세일, closure_date as 종결일, initial_cost as 초기원가, market_name as 우시장 FROM cattle", f_conn)
@@ -1959,7 +1886,7 @@ farm_p_cnt = farm_cfg.get("pens_count", 20)
 
 
 # DB 자동 생성
-if not os.path.exists(DB_FILE):
+if not db_exists(DB_FILE):
     init_db(selected_farm)
 
 # 기존 DB에 나중에 추가된 표가 빠져 있으면 채워 넣는다 (신규 생성 직후에도 실행되지만
@@ -2034,7 +1961,7 @@ def reset_preview(db_file):
         ("개체별 원가 내역", "cattle_cost_log"),
     ]
     rows = []
-    if not os.path.exists(db_file):
+    if not db_exists(db_file):
         return rows
     conn = db_connect(db_file)
     try:
@@ -2093,7 +2020,7 @@ if st.session_state.pop("reset_done", False):
     st.sidebar.success("데이터베이스가 리셋되었습니다. (직전 상태는 백업에 보관)")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("저장 위치: %s" % DB_DIR)
+st.sidebar.caption("저장 위치: %s" % ("Supabase (PostgreSQL)" if USE_PG else DB_DIR))
 
 # 타이틀 (선택된 농장 표시)
 st.markdown(
@@ -3193,7 +3120,7 @@ with tab0:
             SELECT p.purchase_id as 매입ID, p.purchase_date as 매입일자, 
                    p.item_code as 품목코드, i.item_name as 품목명,
                    p.quantity as 수량, p.unit as 단위, p.total_amount as 총금액,
-                   ROUND(p.total_amount / p.quantity, 0) as 단가
+                   ROUND(p.total_amount / NULLIF(p.quantity, 0), 0) as 단가
             FROM purchase p
             JOIN item_master i ON p.item_code = i.item_code
             ORDER BY p.purchase_date DESC
