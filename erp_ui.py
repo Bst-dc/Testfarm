@@ -1618,7 +1618,7 @@ OVERALL_REPORT_JS = """
 """
 
 
-# ========== 월말 회계 입력 자료 (인쇄용) ==========
+# ========== 월말 팔공 입력 자료 (인쇄용) ==========
 ACCOUNTING_SHEET_CSS = """
 @page { size: A4 portrait; margin: 12mm 10mm; }
 * { box-sizing: border-box; }
@@ -1946,7 +1946,7 @@ def generate_accounting_sheet(db_file, farm_name, month):
 <div class="sheet">
   <div class="head">
     <div>
-      <h1>월말 회계 입력 자료</h1>
+      <h1>월말 팔공 입력 자료</h1>
       <div class="meta">농장: <b>{esc(farm_name)}</b> &nbsp;|&nbsp; 대상 월: <b>{esc(month)}</b><br>출력일시: {esc(made_at)}</div>
     </div>
     <table class="sign"><tr><th>작성</th><th>검토</th><th>승인</th></tr><tr><td></td><td></td><td></td></tr></table>
@@ -1963,7 +1963,7 @@ def generate_accounting_sheet(db_file, farm_name, month):
   <h2>[첨부] 입식 개체 명세</h2><p class="note">7-1 합계의 개체별 내역 (증빙용)</p>{admit_html}
 </div>"""
     page = (f'<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
-            f'<title>월말 회계 입력 자료 {esc(farm_name)} {esc(month)}</title><style>{ACCOUNTING_SHEET_CSS}</style></head><body>{body}</body></html>')
+            f'<title>월말 팔공 입력 자료 {esc(farm_name)} {esc(month)}</title><style>{ACCOUNTING_SHEET_CSS}</style></head><body>{body}</body></html>')
     return True, page
 
 
@@ -4617,7 +4617,7 @@ with tab_report:
             st.iframe(report_html, height=900)
 
     st.markdown("---")
-    st.subheader("🖨️ 월말 회계 입력 자료")
+    st.subheader("🖨️ 월말 팔공 입력 자료")
     st.markdown("회사 회계 프로그램에 옮겨 적기 위한 인쇄용 자료입니다. 매입 내역 · 품목 수불부(기초·입고·출고·기말) · 고정비 · "
                 "시험군별 원가 배분 · 입식/출하/폐사 · 월말 사육 장부가를 A4 한 묶음으로 만들고, 줄마다 **입력확인(□)** 칸이 있습니다.")
     acct_months = list_accounting_months(DB_FILE)
@@ -4626,7 +4626,7 @@ with tab_report:
     else:
         acct_col, _ = st.columns([1, 3])
         acct_month = acct_col.selectbox("대상 월", acct_months, key="acct_month_select")
-        if acct_col.button("🖨️ 회계 입력 자료 만들기", type="primary", key="gen_acct_btn", width="stretch"):
+        if acct_col.button("🖨️ 팔공 입력 자료 만들기", type="primary", key="gen_acct_btn", width="stretch"):
             ok, result = generate_accounting_sheet(DB_FILE, selected_farm, acct_month)
             if ok:
                 st.session_state["acct_html"] = result
@@ -4637,11 +4637,11 @@ with tab_report:
 
         acct_html = st.session_state.get("acct_html")
         if acct_html and st.session_state.get("acct_month_generated") == acct_month:
-            st.success(f"'{acct_month}' 회계 입력 자료를 만들었습니다. 내려받은 파일을 열어 **🖨️ 인쇄 / PDF 저장** 버튼을 누르세요.")
+            st.success(f"'{acct_month}' 팔공 입력 자료를 만들었습니다. 내려받은 파일을 열어 **🖨️ 인쇄 / PDF 저장** 버튼을 누르세요.")
             st.download_button(
                 "⬇️ 인쇄용 파일 내려받기 (HTML)",
                 acct_html.encode("utf-8"),
-                file_name=f"회계입력자료_{selected_farm}_{acct_month}.html",
+                file_name=f"팔공입력자료_{selected_farm}_{acct_month}.html",
                 mime="text/html",
                 width="stretch",
                 key="acct_download",
