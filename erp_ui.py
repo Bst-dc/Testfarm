@@ -448,18 +448,13 @@ def save_farms(farms_dict):
 
 FARM_CONFIG = load_farms()
 
-_PG_SCHEMA_CHECKED = set()  # 프로세스당 농장별로 한 번만 스키마를 점검한다 (매 실행마다 왕복하지 않도록)
-
-
 def _migrate_schema_pg(db_file):
-    if db_file in _PG_SCHEMA_CHECKED:
-        return
+    # 프로세스당 농장별로 한 번만 실제로 점검한다 (db_adapter 가 기억해 둔다).
     db_adapter.ensure_schema(db_file, PG_DDL, extra_sql=[
         "ALTER TABLE testgroup_master ADD COLUMN IF NOT EXISTS location_mapping TEXT",
         "ALTER TABLE purchase ADD COLUMN IF NOT EXISTS unit TEXT",
         "ALTER TABLE item_master ADD COLUMN IF NOT EXISTS unit TEXT",
     ])
-    _PG_SCHEMA_CHECKED.add(db_file)
 
 # ========== DB 연결 관리 ==========
 # Streamlit은 버튼/폼을 누를 때마다 스크립트를 처음부터 다시 실행한다.
@@ -819,7 +814,6 @@ def init_db(farm_name):
 
     if USE_PG:
         db_adapter.reset_database(db_file, PG_DDL)
-        _PG_SCHEMA_CHECKED.add(db_file)
         return
 
     if os.path.exists(db_file):
@@ -2021,6 +2015,13 @@ if st.session_state.pop("reset_done", False):
 
 st.sidebar.markdown("---")
 st.sidebar.caption("저장 위치: %s" % ("Supabase (PostgreSQL)" if USE_PG else DB_DIR))
+if USE_PG and st.sidebar.button(
+    "🔄 최신 데이터 다시 불러오기", width="stretch",
+    help="화면을 빠르게 하려고 조회 결과를 잠시(최대 10분) 기억해 둡니다. 이 화면에서 등록·수정한 내용은 바로 반영되지만, "
+         "다른 PC나 Supabase 에서 직접 바꾼 내용을 바로 보려면 누르세요.",
+):
+    db_adapter.clear_cache()
+    st.rerun()
 
 # 타이틀 (선택된 농장 표시)
 st.markdown(

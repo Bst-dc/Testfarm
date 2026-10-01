@@ -226,29 +226,21 @@ class _Pool:
     Supabase 연결은 한 번 맺는 데 수백 ms 가 걸리므로, 닫힌 연결을 버리지 않고 모아 두었다 다시 쓴다."""
 
     MAX_IDLE = 4
-    HEALTH_CHECK_AFTER = 30  # 초. 이보다 오래 놀던 연결은 끊겼을 수 있으니 확인 후 쓴다.
 
     def __init__(self):
         self._idle = []
         self._lock = threading.Lock()
 
-    def get(self):
-        while True:
+    def get(self, fresh=False):
+        """쉬고 있던 연결을 돌려준다. 미리 'SELECT 1' 로 살아 있는지 확인하면 그만큼 왕복이 늘어나므로,
+        확인하지 않고 쓰다가 끊긴 연결이면 Connection._run 이 새 연결로 한 번 다시 시도한다."""
+        while not fresh:
             with self._lock:
                 if not self._idle:
                     break
-                raw, schema, since = self._idle.pop()
-            if raw.closed:
-                continue
-            if time.time() - since > self.HEALTH_CHECK_AFTER:
-                try:
-                    with raw.cursor() as c:
-                        c.execute("SELECT 1")
-                    raw.rollback()
-                except psycopg2.Error:
-                    _close_quietly(raw)
-                    continue
-            return raw, schema
+                raw, schema, _ = self._idle.pop()
+            if not raw.closed:
+                return raw, schema
         url = database_url()
         if not url:
             raise OperationalError("DATABASE_URL 이 설정되지 않았습니다 (.streamlit/secrets.toml 또는 Streamlit Cloud Secrets).")
@@ -294,6 +286,67 @@ def _set_schema(raw, schema):
         raw.autocommit = False
 
 
+# ========== 조회 결과 캐시 ==========
+# Streamlit 은 클릭할 때마다 화면 전체를 다시 그리며 조회를 30번 넘게 보낸다. Streamlit Cloud(미국) ↔
+# Supabase(서울) 왕복이 길어 클릭마다 수 초가 걸리므로, SELECT 결과를 농장(스키마)별로 기억해 두고 재사용한다.
+# 그 농장에 쓰기(INSERT/UPDATE/DELETE 등)가 일어나면 즉시 그 농장 캐시를 비운다 → 이 앱에서 한 변경은 바로 보인다.
+# 다른 곳(로컬 PC 의 앱, Supabase 대시보드 등)에서 바꾼 내용은 CACHE_TTL 이 지나거나 clear_cache() 를 부르면 보인다.
+CACHE_TTL = 600  # 초
+_CACHE_MAX = 2000
+_cache = {}      # (schema, sql, params) -> (만료시각, description, rows)
+_cache_ver = {}  # schema -> 쓰기 때마다 1씩 증가 (조회 도중 쓰기가 끼면 그 결과는 저장하지 않는다)
+_cache_lock = threading.Lock()
+_exists = set()  # cattle 표가 있다고 확인된 스키마
+# 이 프로세스에서 이미 표 구조를 점검한 스키마. Streamlit 은 클릭마다 erp_ui.py 를 처음부터 다시 실행하므로
+# 이 기록은 앱 쪽이 아니라 (다시 실행되지 않는) 이 모듈에 둬야 한다.
+_ensured = set()
+
+
+def _is_read(sql):
+    return sql.lstrip().lstrip("(").lstrip()[:6].upper() == "SELECT"
+
+
+def _cache_get(key):
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit and hit[0] > time.time():
+            return hit[1], hit[2]
+        if hit:
+            del _cache[key]
+    return None
+
+
+def _cache_put(key, version, description, rows):
+    with _cache_lock:
+        if _cache_ver.get(key[0], 0) != version:
+            return
+        if len(_cache) >= _CACHE_MAX:
+            _cache.clear()
+        _cache[key] = (time.time() + CACHE_TTL, description, rows)
+
+
+def _cache_version(schema):
+    with _cache_lock:
+        return _cache_ver.get(schema, 0)
+
+
+def invalidate(schema):
+    """해당 농장 스키마의 조회 캐시를 비운다."""
+    with _cache_lock:
+        _cache_ver[schema] = _cache_ver.get(schema, 0) + 1
+        for k in [k for k in _cache if k[0] == schema]:
+            del _cache[k]
+
+
+def clear_cache():
+    """모든 조회 캐시를 비운다 (다른 곳에서 바꾼 데이터를 바로 불러오고 싶을 때)."""
+    with _cache_lock:
+        for schema in set(_cache_ver) | {k[0] for k in _cache}:
+            _cache_ver[schema] = _cache_ver.get(schema, 0) + 1
+        _cache.clear()
+        _exists.clear()
+
+
 # ========== sqlite3 호환 연결 / 커서 ==========
 class Cursor:
     arraysize = 1
@@ -304,6 +357,8 @@ class Cursor:
         self._cur = conn._raw.cursor()
         self.description = None
         self.rowcount = -1
+        self._rows = None  # 결과는 한 번에 받아 두고 여기서 꺼내 준다 (캐시에 넣기 위해)
+        self._pos = 0
 
     def execute(self, sql, params=None):
         q = _translate(sql)
@@ -312,9 +367,31 @@ class Cursor:
                 raise ProgrammingError("이름 붙은 파라미터(:name)는 지원하지 않습니다.")
             params = tuple(params)
             q = _bind(q)
-        self._conn._run(self._cur, q, params)
+        conn = self._conn
+        self._rows, self._pos = None, 0
+        is_read = _is_read(q)
+        # 이 연결에 아직 커밋하지 않은 쓰기가 있으면, 그 변경이 보여야 하므로 캐시를 쓰지 않는다.
+        key = None
+        if is_read and not conn._dirty:
+            key = (conn._schema, q, params)
+            try:
+                hit = _cache_get(key)
+            except TypeError:  # 해시할 수 없는 파라미터
+                key, hit = None, None
+            if hit:
+                self.description, rows = hit
+                self._rows, self.rowcount = rows, len(rows)
+                return self
+            version = _cache_version(conn._schema)
+        conn._run(self, q, params)
         self.description = self._cur.description
         self.rowcount = self._cur.rowcount
+        if self.description is not None:
+            self._rows = self._cur.fetchall()
+            if key is not None:
+                _cache_put(key, version, self.description, self._rows)
+        if not is_read:
+            conn._mark_dirty()
         return self
 
     def executemany(self, sql, seq_of_parameters):
@@ -326,19 +403,31 @@ class Cursor:
         return self
 
     def executescript(self, script):
-        self._conn._run(self._cur, _translate(script), None)
+        self._rows, self._pos = None, 0
+        self._conn._run(self, _translate(script), None)
+        self._conn._mark_dirty()
         return self
 
     def fetchone(self):
-        return self._cur.fetchone() if self._cur.description else None
+        if not self._rows or self._pos >= len(self._rows):
+            return None
+        self._pos += 1
+        return self._rows[self._pos - 1]
 
     def fetchall(self):
-        return self._cur.fetchall() if self._cur.description else []
+        if not self._rows:
+            return []
+        rest = self._rows[self._pos:]
+        self._pos = len(self._rows)
+        return list(rest)
 
     def fetchmany(self, size=None):
-        if not self._cur.description:
+        if not self._rows:
             return []
-        return self._cur.fetchmany(size or self.arraysize)
+        size = size or self.arraysize
+        part = self._rows[self._pos:self._pos + size]
+        self._pos += len(part)
+        return list(part)
 
     def __iter__(self):
         return iter(self.fetchall())
@@ -355,23 +444,46 @@ class Connection:
         self._raw = raw
         self._schema = schema
         self._savepoint = False  # 현재 트랜잭션 안에 SAVEPOINT 가 걸려 있는지
+        self._dirty = False      # 현재 트랜잭션 안에 쓰기가 있었는지
         self._closed = False
+
+    def _mark_dirty(self):
+        self._dirty = True
+        invalidate(self._schema)
 
     def _check(self):
         if self._closed:
             raise ProgrammingError("Cannot operate on a closed database.")
 
-    def _run(self, cur, sql, params):
+    def _run(self, cursor, sql, params, retry=True):
         self._check()
         # 명령마다 SAVEPOINT 를 새로 건다(같은 왕복에 실어 보내므로 추가 지연 없음).
         # 실패하면 그 명령만 되돌려, 같은 트랜잭션의 이전 작업과 이후 명령이 살아남는다 (SQLite 와 같은 동작).
         prefix = "RELEASE SAVEPOINT sqlite_stmt; SAVEPOINT sqlite_stmt; " if self._savepoint else "SAVEPOINT sqlite_stmt; "
         try:
-            cur.execute(prefix + sql, params)
+            cursor._cur.execute(prefix + sql, params)
             self._savepoint = True
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            # 오래 쉬던 연결이 서버 쪽에서 끊긴 경우: 이 트랜잭션에 쓰기가 없었다면 새 연결로 한 번 다시 시도한다.
+            if retry and self._raw.closed and not self._dirty:
+                self._reconnect()
+                cursor._cur = self._raw.cursor()
+                return self._run(cursor, sql, params, retry=False)
+            self._recover()
+            raise _wrap_error(e) from None
         except psycopg2.Error as e:
             self._recover()
             raise _wrap_error(e) from None
+
+    def _reconnect(self):
+        _close_quietly(self._raw)
+        raw, _ = _POOL.get(fresh=True)
+        try:
+            _set_schema(raw, self._schema)
+        except psycopg2.Error as e:
+            _close_quietly(raw)
+            raise _wrap_error(e) from None
+        self._raw, self._savepoint = raw, False
 
     def _recover(self):
         raw = self._raw
@@ -413,7 +525,10 @@ class Connection:
         except psycopg2.Error as e:
             raise _wrap_error(e) from None
         finally:
-            self._savepoint = False
+            if self._dirty:
+                # 커밋 전에 다른 연결이 옛 값을 읽어 캐시에 넣었을 수 있으니 커밋 시점에 한 번 더 비운다.
+                invalidate(self._schema)
+            self._savepoint = self._dirty = False
 
     def rollback(self):
         if self._closed or self._raw.closed:
@@ -423,7 +538,7 @@ class Connection:
         except psycopg2.Error as e:
             raise _wrap_error(e) from None
         finally:
-            self._savepoint = False
+            self._savepoint = self._dirty = False
 
     def close(self):
         """커밋하지 않은 변경은 버리고(sqlite3 와 같음) 연결은 재사용을 위해 풀로 돌려준다."""
@@ -451,9 +566,15 @@ def connect(db_file, timeout=30, check_same_thread=False, **kwargs):
     if current != schema:
         try:
             _set_schema(raw, schema)
-        except psycopg2.Error as e:
+        except psycopg2.Error:
+            # 쉬던 연결이 끊겨 있었을 수 있으니 새 연결로 한 번 더 시도한다.
             _close_quietly(raw)
-            raise _wrap_error(e) from None
+            raw, _ = _POOL.get(fresh=True)
+            try:
+                _set_schema(raw, schema)
+            except psycopg2.Error as e:
+                _close_quietly(raw)
+                raise _wrap_error(e) from None
     return Connection(raw, schema)
 
 
@@ -466,13 +587,21 @@ def _raw_connection(schema=None):
 
 
 def database_exists(db_file):
-    """농장 스키마에 cattle 표가 있으면 '이 농장 DB가 있다'로 본다 (os.path.exists 대용)."""
+    """농장 스키마에 cattle 표가 있으면 '이 농장 DB가 있다'로 본다 (os.path.exists 대용).
+    매 화면마다 묻지 않도록, 있다고 확인된 스키마는 기억해 둔다 (리셋·복원·clear_cache 때 다시 확인)."""
+    schema = schema_for(db_file)
+    if schema in _exists:
+        return True
     raw = _raw_connection()
     try:
         with raw.cursor() as c:
-            c.execute("SELECT to_regclass(%s)", (_ident(schema_for(db_file)) + ".cattle",))
-            return c.fetchone()[0] is not None
+            c.execute("SELECT to_regclass(%s)", (_ident(schema) + ".cattle",))
+            found = c.fetchone()[0] is not None
+        if found:
+            _exists.add(schema)
+        return found
     except psycopg2.Error:
+        _close_quietly(raw)
         return False
     finally:
         _POOL.put(raw, None)
@@ -487,8 +616,11 @@ def _run_ddl(c, schema, ddl, drop_first):
 
 
 def ensure_schema(db_file, ddl, extra_sql=()):
-    """스키마와 표를 만든다(이미 있으면 그대로). extra_sql 은 나중에 추가된 컬럼 등 보완용 문장."""
+    """스키마와 표를 만든다(이미 있으면 그대로). extra_sql 은 나중에 추가된 컬럼 등 보완용 문장.
+    프로세스당 스키마별로 한 번만 실제로 실행한다."""
     schema = schema_for(db_file)
+    if schema in _ensured:
+        return
     raw = _raw_connection()
     try:
         with raw.cursor() as c:
@@ -496,6 +628,9 @@ def ensure_schema(db_file, ddl, extra_sql=()):
             for stmt in extra_sql:
                 c.execute(stmt)
         raw.commit()
+        invalidate(schema)
+        _exists.add(schema)
+        _ensured.add(schema)
     except psycopg2.Error as e:
         raw.rollback()
         raise _wrap_error(e) from None
@@ -511,6 +646,9 @@ def reset_database(db_file, ddl):
         with raw.cursor() as c:
             _run_ddl(c, schema, ddl, drop_first=True)
         raw.commit()
+        invalidate(schema)
+        _exists.add(schema)
+        _ensured.add(schema)
     except psycopg2.Error as e:
         raw.rollback()
         raise _wrap_error(e) from None
@@ -593,6 +731,9 @@ def import_from_sqlite(db_file, sqlite_path, ddl, tables, trigger_tables=()):
                 c.execute("SELECT setval(%%s, COALESCE((SELECT MAX(%s) FROM %s), 0) + 1, false)"
                           % (_ident(col), _ident(table)), (seq,))
         raw.commit()
+        invalidate(schema)
+        _exists.add(schema)
+        _ensured.add(schema)
         return counts
     except psycopg2.Error as e:
         raw.rollback()
