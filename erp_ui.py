@@ -4015,6 +4015,39 @@ with tab2:
             )
             st.caption("누적 사육비 = 정산 대상 연월까지 적재된 변동비·고정비 합계 · 누적 원가 = 구입원가(구입비용합계) + 누적 사육비")
             show_table_total(len(df_log), "누적 원가", df_log['누적_원가'].sum())
+
+            # 두당 평균 원가 (이번 정산 대상 개체 기준)
+            st.markdown(f"##### 📊 [{target_month}] 두당 평균 원가 ({len(df_log):,}두)")
+            avg_cols = st.columns(4)
+            avg_cols[0].metric("평균 당월 추가원가", f"{df_log['당월_추가원가'].mean():,.0f}원")
+            avg_cols[1].metric("평균 구입원가", f"{df_log['구입원가'].mean():,.0f}원")
+            avg_cols[2].metric("평균 누적 사육비", f"{df_log['누적_사육비'].mean():,.0f}원")
+            avg_cols[3].metric("평균 누적 원가", f"{df_log['누적_원가'].mean():,.0f}원")
+
+            # 시험군별 두당 평균 원가
+            group_of = pd.read_sql(
+                "SELECT c.cattle_id, COALESCE(t.test_name, '(시험군 없음)') AS 시험군 FROM cattle c "
+                "LEFT JOIN testgroup_master t ON t.test_group_code = c.test_group_code", conn)
+            by_group = (
+                df_log.merge(group_of, on="cattle_id", how="left")
+                .fillna({"시험군": "(시험군 없음)"})
+                .groupby("시험군")
+                .agg(두수=("cattle_id", "count"), 평균_당월_추가원가=("당월_추가원가", "mean"),
+                     평균_구입원가=("구입원가", "mean"), 평균_누적_사육비=("누적_사육비", "mean"),
+                     평균_누적_원가=("누적_원가", "mean"))
+                .reset_index()
+            )
+            if len(by_group) > 1:
+                st.dataframe(
+                    by_group, width="stretch", hide_index=True,
+                    column_config={
+                        "두수": st.column_config.NumberColumn("두수", format="localized", alignment="right"),
+                        "평균_당월_추가원가": money("평균 당월 추가원가 (원)"),
+                        "평균_구입원가": money("평균 구입원가 (원)"),
+                        "평균_누적_사육비": money("평균 누적 사육비 (원)"),
+                        "평균_누적_원가": money("평균 누적 원가 (원)"),
+                    },
+                )
     except:
         st.info("아직 정산된 내역이 없습니다.")
 
