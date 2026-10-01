@@ -1618,6 +1618,304 @@ OVERALL_REPORT_JS = """
 """
 
 
+# ========== 월말 회계 입력 자료 (인쇄용) ==========
+ACCOUNTING_SHEET_CSS = """
+@page { size: A4 portrait; margin: 12mm 10mm; }
+* { box-sizing: border-box; }
+body { font-family: 'Pretendard', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; color: #111; margin: 0;
+       background: #f3f4f6; font-size: 12px; }
+.sheet { max-width: 900px; margin: 16px auto; background: #fff; padding: 22px 26px; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+.head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-bottom: 2px solid #111;
+        padding-bottom: 10px; margin-bottom: 14px; }
+.head h1 { font-size: 20px; margin: 0 0 4px; }
+.head .meta { color: #444; line-height: 1.6; }
+table.sign { border-collapse: collapse; }
+table.sign th, table.sign td { border: 1px solid #333; width: 64px; text-align: center; padding: 3px; font-size: 11px; }
+table.sign td { height: 46px; }
+h2 { font-size: 14px; margin: 18px 0 6px; padding-left: 8px; border-left: 4px solid #2E6B57; }
+.keep { break-inside: avoid-page; page-break-inside: avoid; }
+.note { color: #555; font-size: 11px; margin: 0 0 6px; }
+table.t { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+table.t th, table.t td { border: 1px solid #9ca3af; padding: 4px 6px; }
+table.t th { background: #eef2f0; font-weight: 700; text-align: center; white-space: nowrap; }
+table.t td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.t td.c { text-align: center; white-space: nowrap; }
+table.t tr.sub td { background: #f7f7f7; font-weight: 700; }
+table.t tr.total td { background: #e5ece8; font-weight: 800; }
+table.t td.chk { text-align: center; width: 34px; color: #666; }
+.summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.summary div { border: 1px solid #9ca3af; padding: 6px 8px; }
+.summary b { display: block; font-size: 11px; color: #444; font-weight: 600; }
+.summary span { font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.empty { color: #666; padding: 6px 0; }
+.toolbar { max-width: 900px; margin: 12px auto 0; text-align: right; }
+.toolbar button { font-size: 14px; padding: 8px 18px; border: 0; border-radius: 8px; background: #2E6B57; color: #fff; cursor: pointer; }
+thead { display: table-header-group; }
+tr { page-break-inside: avoid; }
+@media print {
+  body { background: #fff; }
+  .sheet { box-shadow: none; margin: 0; max-width: none; padding: 0; }
+  .toolbar { display: none; }
+  h2 { page-break-after: avoid; }
+}
+"""
+
+
+def generate_accounting_sheet(db_file, farm_name, month):
+    """한 달 치 자료를 회사 회계 프로그램에 옮겨 적기 좋게 A4 인쇄용 HTML 로 만든다 (읽기 전용).
+
+    1 요약 / 2 매입(입고) 내역 / 3 품목 수불부(기초·입고·출고·기말) / 4 고정비 / 5 시험군별 원가 배분 /
+    6 개체 증감(입식·출하·폐사) / 7 월말 사육 개체 장부가. 줄마다 '입력확인' 칸(□)을 둔다.
+    반환값: (성공여부, HTML 또는 오류 메시지)
+    """
+    esc = lambda v: html.escape("" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v))
+    won = lambda v: f"{float(v):,.0f}" if pd.notna(v) else "-"
+    qty = lambda v: (f"{float(v):,.2f}".rstrip("0").rstrip(".") if pd.notna(v) else "-")
+    chk = '<td class="chk">□</td>'
+
+    conn = db_connect(db_file)
+    try:
+        purchases = pd.read_sql("""
+            SELECT p.purchase_date, i.category, i.item_name, p.item_code, p.quantity, COALESCE(p.unit, i.unit) AS unit, p.total_amount
+            FROM purchase p JOIN item_master i ON i.item_code = p.item_code
+            WHERE substr(p.purchase_date, 1, 7) = ?
+            ORDER BY i.category, p.purchase_date, i.item_name
+        """, conn, params=(month,))
+        # 품목 수불: 기초 = 이 달 이전 매입 - 이 달 이전 사용, 입고 = 이 달 매입, 출고 = 이 달 사용
+        ledger = pd.read_sql("""
+            SELECT i.item_code, i.item_name, i.category, i.unit,
+              COALESCE((SELECT SUM(quantity) FROM purchase p WHERE p.item_code = i.item_code AND substr(p.purchase_date, 1, 7) < ?), 0)
+            - COALESCE((SELECT SUM(total_usage) FROM monthly_usage u WHERE u.item_code = i.item_code AND u.settlement_month < ?), 0) AS open_qty,
+              COALESCE((SELECT SUM(total_amount) FROM purchase p WHERE p.item_code = i.item_code AND substr(p.purchase_date, 1, 7) < ?), 0)
+            - COALESCE((SELECT SUM(calculated_amount) FROM monthly_usage u WHERE u.item_code = i.item_code AND u.settlement_month < ?), 0) AS open_amt,
+              COALESCE((SELECT SUM(quantity) FROM purchase p WHERE p.item_code = i.item_code AND substr(p.purchase_date, 1, 7) = ?), 0) AS in_qty,
+              COALESCE((SELECT SUM(total_amount) FROM purchase p WHERE p.item_code = i.item_code AND substr(p.purchase_date, 1, 7) = ?), 0) AS in_amt,
+              COALESCE((SELECT SUM(total_usage) FROM monthly_usage u WHERE u.item_code = i.item_code AND u.settlement_month = ?), 0) AS out_qty,
+              COALESCE((SELECT SUM(calculated_amount) FROM monthly_usage u WHERE u.item_code = i.item_code AND u.settlement_month = ?), 0) AS out_amt
+            FROM item_master i ORDER BY i.category, i.item_name
+        """, conn, params=(month,) * 8)
+        fixed = pd.read_sql(
+            "SELECT expense_item, total_billed_amount FROM monthly_fixedcost WHERE settlement_month = ? ORDER BY fixed_cost_id",
+            conn, params=(month,))
+        alloc = pd.read_sql("""
+            SELECT COALESCE(t.test_name, '(시험군 없음)') AS grp, COUNT(*) AS heads,
+                   SUM(l.allocated_variable_cost) AS var_cost, SUM(l.allocated_fixed_cost) AS fix_cost
+            FROM cattle_cost_log l
+            LEFT JOIN cattle c ON c.cattle_id = l.cattle_id
+            LEFT JOIN testgroup_master t ON t.test_group_code = c.test_group_code
+            WHERE l.settlement_month = ?
+            GROUP BY 1 ORDER BY 1
+        """, conn, params=(month,))
+        admitted = pd.read_sql("""
+            SELECT c.cattle_id, c.admission_date, t.test_name, c.market_name, c.calf_price, c.commission_fee, c.transport_fee, c.initial_cost
+            FROM cattle c LEFT JOIN testgroup_master t ON t.test_group_code = c.test_group_code
+            WHERE substr(c.admission_date, 1, 7) = ? ORDER BY c.admission_date, c.cattle_id
+        """, conn, params=(month,))
+        closed = pd.read_sql("""
+            SELECT c.cattle_id, c.status, c.closure_date, t.test_name, c.initial_cost,
+                   COALESCE((SELECT SUM(h.allocated_variable_cost + h.allocated_fixed_cost) FROM cattle_cost_log h
+                             WHERE h.cattle_id = c.cattle_id AND h.settlement_month <= ?), 0) AS raised_cost
+            FROM cattle c LEFT JOIN testgroup_master t ON t.test_group_code = c.test_group_code
+            WHERE c.status IN ('출하', '폐사') AND substr(c.closure_date, 1, 7) = ?
+            ORDER BY c.status, c.closure_date, c.cattle_id
+        """, conn, params=(month, month))
+        # 월말 사육 개체: 이 달 말까지 입식했고, 이 달 말까지 출하·폐사하지 않은 개체
+        on_hand = pd.read_sql("""
+            SELECT COALESCE(t.test_name, '(시험군 없음)') AS grp, COUNT(*) AS heads, SUM(c.initial_cost) AS buy_cost,
+                   SUM(COALESCE((SELECT SUM(h.allocated_variable_cost + h.allocated_fixed_cost) FROM cattle_cost_log h
+                                  WHERE h.cattle_id = c.cattle_id AND h.settlement_month <= ?), 0)) AS raised_cost
+            FROM cattle c LEFT JOIN testgroup_master t ON t.test_group_code = c.test_group_code
+            WHERE substr(c.admission_date, 1, 7) <= ?
+              AND (c.closure_date IS NULL OR c.closure_date = '' OR substr(c.closure_date, 1, 7) > ?)
+            GROUP BY 1 ORDER BY 1
+        """, conn, params=(month, month, month))
+    except Exception as e:
+        return False, f"자료를 읽는 중 오류가 발생했습니다: {e}"
+    finally:
+        conn.close()
+
+    ledger["close_qty"] = ledger["open_qty"] + ledger["in_qty"] - ledger["out_qty"]
+    ledger["close_amt"] = ledger["open_amt"] + ledger["in_amt"] - ledger["out_amt"]
+    active = ledger[(ledger[["open_qty", "in_qty", "out_qty", "close_qty"]].abs() > 1e-9).any(axis=1)]
+    alloc["total"] = alloc["var_cost"] + alloc["fix_cost"]
+    on_hand["book"] = on_hand["buy_cost"] + on_hand["raised_cost"]
+    closed["book"] = closed["initial_cost"] + closed["raised_cost"]
+    settled = not alloc.empty
+
+    # ---- 1. 요약 ----
+    summary_items = [
+        ("매입(입고) 합계", f"{won(purchases['total_amount'].sum())}원"),
+        ("사용(출고) = 변동비", f"{won(active['out_amt'].sum())}원"),
+        ("고정비 합계", f"{won(fixed['total_billed_amount'].sum())}원"),
+        ("원가 배분 합계", f"{won(alloc['total'].sum())}원" if settled else "미정산"),
+        ("입식", f"{len(admitted):,}두 · {won(admitted['initial_cost'].sum())}원"),
+        ("출하 / 폐사", f"{int((closed['status'] == '출하').sum())}두 / {int((closed['status'] == '폐사').sum())}두"),
+        ("월말 사육두수", f"{int(on_hand['heads'].sum()):,}두"),
+        ("월말 사육 장부가", f"{won(on_hand['book'].sum())}원"),
+    ]
+    summary_html = '<div class="summary">' + "".join(f"<div><b>{esc(k)}</b><span>{esc(v)}</span></div>" for k, v in summary_items) + "</div>"
+    if not settled:
+        summary_html += f'<p class="note">※ {esc(month)} 은 아직 월말 정산 전입니다. 원가 배분·장부가의 사육비는 정산 후 반영됩니다.</p>'
+
+    # ---- 2. 매입 내역 (분류별 소계) ----
+    if purchases.empty:
+        purchase_html = '<div class="empty">이 달 매입 내역이 없습니다.</div>'
+    else:
+        rows = []
+        for cat, g in purchases.groupby("category", sort=False):
+            for _, r in g.iterrows():
+                price = r["total_amount"] / r["quantity"] if r["quantity"] else None
+                rows.append(f'<tr><td class="c">{esc(r["purchase_date"])}</td><td class="c">{esc(cat)}</td><td>{esc(r["item_name"])}</td>'
+                            f'<td class="n">{qty(r["quantity"])}</td><td class="c">{esc(r["unit"])}</td>'
+                            f'<td class="n">{qty(price)}</td><td class="n">{won(r["total_amount"])}</td>{chk}</tr>')
+            rows.append(f'<tr class="sub"><td colspan="6">{esc(cat)} 소계 ({len(g)}건)</td><td class="n">{won(g["total_amount"].sum())}</td><td></td></tr>')
+        rows.append(f'<tr class="total"><td colspan="6">매입 합계 ({len(purchases)}건)</td><td class="n">{won(purchases["total_amount"].sum())}</td><td></td></tr>')
+        purchase_html = ('<table class="t"><thead><tr><th>매입일자</th><th>분류</th><th>품목</th><th>수량</th><th>단위</th>'
+                         '<th>단가</th><th>금액(원)</th><th>입력<br>확인</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table>")
+
+    # ---- 3. 품목 수불부 ----
+    if active.empty:
+        ledger_html = '<div class="empty">이 달 수불 내역이 없습니다.</div>'
+    else:
+        rows = []
+        for cat, g in active.groupby("category", sort=False):
+            for _, r in g.iterrows():
+                rows.append(
+                    f'<tr><td class="c">{esc(cat)}</td><td>{esc(r["item_name"])}</td><td class="c">{esc(r["unit"])}</td>'
+                    f'<td class="n">{qty(r["open_qty"])}</td><td class="n">{won(r["open_amt"])}</td>'
+                    f'<td class="n">{qty(r["in_qty"])}</td><td class="n">{won(r["in_amt"])}</td>'
+                    f'<td class="n">{qty(r["out_qty"])}</td><td class="n">{won(r["out_amt"])}</td>'
+                    f'<td class="n">{qty(r["close_qty"])}</td><td class="n">{won(r["close_amt"])}</td>{chk}</tr>')
+            rows.append(f'<tr class="sub"><td colspan="3">{esc(cat)} 소계</td><td></td><td class="n">{won(g["open_amt"].sum())}</td>'
+                        f'<td></td><td class="n">{won(g["in_amt"].sum())}</td><td></td><td class="n">{won(g["out_amt"].sum())}</td>'
+                        f'<td></td><td class="n">{won(g["close_amt"].sum())}</td><td></td></tr>')
+        rows.append(f'<tr class="total"><td colspan="3">합계</td><td></td><td class="n">{won(active["open_amt"].sum())}</td>'
+                    f'<td></td><td class="n">{won(active["in_amt"].sum())}</td><td></td><td class="n">{won(active["out_amt"].sum())}</td>'
+                    f'<td></td><td class="n">{won(active["close_amt"].sum())}</td><td></td></tr>')
+        ledger_html = ('<table class="t"><thead><tr><th rowspan="2">분류</th><th rowspan="2">품목</th><th rowspan="2">단위</th>'
+                       '<th colspan="2">기초</th><th colspan="2">입고(매입)</th><th colspan="2">출고(사용)</th><th colspan="2">기말</th>'
+                       '<th rowspan="2">입력<br>확인</th></tr><tr><th>수량</th><th>금액</th><th>수량</th><th>금액</th>'
+                       '<th>수량</th><th>금액</th><th>수량</th><th>금액</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table>")
+
+    # ---- 4. 고정비 ----
+    if fixed.empty:
+        fixed_html = '<div class="empty">이 달 고정비 내역이 없습니다.</div>'
+    else:
+        rows = [f'<tr><td>{esc(r["expense_item"])}</td><td class="n">{won(r["total_billed_amount"])}</td>{chk}</tr>' for _, r in fixed.iterrows()]
+        rows.append(f'<tr class="total"><td>고정비 합계 ({len(fixed)}건)</td><td class="n">{won(fixed["total_billed_amount"].sum())}</td><td></td></tr>')
+        fixed_html = '<table class="t"><thead><tr><th>지출 항목</th><th>금액(원)</th><th>입력<br>확인</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table>"
+
+    # ---- 5. 시험군별 원가 배분 ----
+    if not settled:
+        alloc_html = f'<div class="empty">{esc(month)} 은 아직 정산하지 않았습니다.</div>'
+    else:
+        rows = [f'<tr><td>{esc(r["grp"])}</td><td class="n">{int(r["heads"]):,}</td><td class="n">{won(r["var_cost"])}</td>'
+                f'<td class="n">{won(r["fix_cost"])}</td><td class="n">{won(r["total"])}</td>{chk}</tr>' for _, r in alloc.iterrows()]
+        rows.append(f'<tr class="total"><td>합계</td><td class="n">{int(alloc["heads"].sum()):,}</td><td class="n">{won(alloc["var_cost"].sum())}</td>'
+                    f'<td class="n">{won(alloc["fix_cost"].sum())}</td><td class="n">{won(alloc["total"].sum())}</td><td></td></tr>')
+        alloc_html = ('<table class="t"><thead><tr><th>시험군</th><th>두수</th><th>변동비(원)</th><th>고정비(원)</th><th>배분 합계(원)</th>'
+                      '<th>입력<br>확인</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table>")
+
+    # ---- 6. 개체 증감 ----
+    if admitted.empty:
+        admit_html = '<div class="empty">이 달 입식한 개체가 없습니다.</div>'
+        admit_sum_html = admit_html
+    else:
+        # 회계 입력은 거래(입식일·우시장) 단위로 하므로 먼저 거래별 합계를 보여 주고, 개체별 명세는 아래에 둔다.
+        deals = (admitted.assign(market_name=admitted["market_name"].fillna("(우시장 없음)"))
+                 .groupby(["admission_date", "market_name"], sort=True)
+                 .agg(heads=("cattle_id", "count"), calf=("calf_price", "sum"), comm=("commission_fee", "sum"),
+                      trans=("transport_fee", "sum"), total=("initial_cost", "sum")).reset_index())
+        rows = [f'<tr><td class="c">{esc(r["admission_date"])}</td><td>{esc(r["market_name"])}</td><td class="n">{int(r["heads"]):,}</td>'
+                f'<td class="n">{won(r["calf"])}</td><td class="n">{won(r["comm"])}</td><td class="n">{won(r["trans"])}</td>'
+                f'<td class="n">{won(r["total"])}</td>{chk}</tr>' for _, r in deals.iterrows()]
+        rows.append(f'<tr class="total"><td colspan="2">합계 ({len(deals)}건)</td><td class="n">{len(admitted):,}</td>'
+                    f'<td class="n">{won(admitted["calf_price"].sum())}</td><td class="n">{won(admitted["commission_fee"].sum())}</td>'
+                    f'<td class="n">{won(admitted["transport_fee"].sum())}</td><td class="n">{won(admitted["initial_cost"].sum())}</td><td></td></tr>')
+        admit_sum_html = ('<table class="t"><thead><tr><th>입식일</th><th>우시장</th><th>두수</th><th>구입금액</th><th>수수료</th>'
+                          '<th>운송료</th><th>구입비용합계</th><th>입력<br>확인</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table>")
+        rows = [f'<tr><td class="c">{esc(r["admission_date"])}</td><td class="c">{esc(r["cattle_id"])}</td><td>{esc(r["test_name"])}</td>'
+                f'<td>{esc(r["market_name"])}</td><td class="n">{won(r["calf_price"])}</td><td class="n">{won(r["commission_fee"])}</td>'
+                f'<td class="n">{won(r["transport_fee"])}</td><td class="n">{won(r["initial_cost"])}</td>{chk}</tr>' for _, r in admitted.iterrows()]
+        rows.append(f'<tr class="total"><td colspan="4">입식 합계 ({len(admitted)}두)</td><td class="n">{won(admitted["calf_price"].sum())}</td>'
+                    f'<td class="n">{won(admitted["commission_fee"].sum())}</td><td class="n">{won(admitted["transport_fee"].sum())}</td>'
+                    f'<td class="n">{won(admitted["initial_cost"].sum())}</td><td></td></tr>')
+        admit_html = ('<table class="t"><thead><tr><th>입식일</th><th>이표번호</th><th>시험군</th><th>우시장</th><th>구입금액</th>'
+                      '<th>수수료</th><th>운송료</th><th>구입비용합계</th><th>입력<br>확인</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table>")
+    if closed.empty:
+        closed_html = '<div class="empty">이 달 출하·폐사한 개체가 없습니다.</div>'
+    else:
+        rows = [f'<tr><td class="c">{esc(r["closure_date"])}</td><td class="c">{esc(r["status"])}</td><td class="c">{esc(r["cattle_id"])}</td>'
+                f'<td>{esc(r["test_name"])}</td><td class="n">{won(r["initial_cost"])}</td><td class="n">{won(r["raised_cost"])}</td>'
+                f'<td class="n">{won(r["book"])}</td>{chk}</tr>' for _, r in closed.iterrows()]
+        rows.append(f'<tr class="total"><td colspan="4">합계 ({len(closed)}두)</td><td class="n">{won(closed["initial_cost"].sum())}</td>'
+                    f'<td class="n">{won(closed["raised_cost"].sum())}</td><td class="n">{won(closed["book"].sum())}</td><td></td></tr>')
+        closed_html = ('<table class="t"><thead><tr><th>종결일</th><th>구분</th><th>이표번호</th><th>시험군</th><th>구입원가</th>'
+                       '<th>누적 사육비</th><th>누적 원가</th><th>입력<br>확인</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table>")
+
+    # ---- 7. 월말 사육 개체 장부가 ----
+    if on_hand.empty:
+        onhand_html = '<div class="empty">월말 사육 중인 개체가 없습니다.</div>'
+    else:
+        rows = [f'<tr><td>{esc(r["grp"])}</td><td class="n">{int(r["heads"]):,}</td><td class="n">{won(r["buy_cost"])}</td>'
+                f'<td class="n">{won(r["raised_cost"])}</td><td class="n">{won(r["book"])}</td>{chk}</tr>' for _, r in on_hand.iterrows()]
+        rows.append(f'<tr class="total"><td>합계</td><td class="n">{int(on_hand["heads"].sum()):,}</td><td class="n">{won(on_hand["buy_cost"].sum())}</td>'
+                    f'<td class="n">{won(on_hand["raised_cost"].sum())}</td><td class="n">{won(on_hand["book"].sum())}</td><td></td></tr>')
+        onhand_html = ('<table class="t"><thead><tr><th>시험군</th><th>두수</th><th>구입원가 합계</th><th>누적 사육비</th>'
+                       '<th>장부가(원)</th><th>입력<br>확인</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table>")
+
+    alloc_note = ""
+    if settled:
+        diff_var = alloc["var_cost"].sum() - active["out_amt"].sum()
+        diff_fix = alloc["fix_cost"].sum() - fixed["total_billed_amount"].sum()
+        parts = [f"{name} {round(v):+,}원" for name, v in (("변동비", diff_var), ("고정비", diff_fix)) if abs(v) >= 0.5]
+        if parts:
+            alloc_note = (f'<p class="note">※ 등록 금액과의 차이: {", ".join(parts)} — '
+                          '개체별로 나눌 때 원 미만을 반올림해서 생기는 차이입니다.</p>')
+
+    made_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    body = f"""
+<div class="toolbar"><button onclick="window.print()">🖨️ 인쇄 / PDF 저장</button></div>
+<div class="sheet">
+  <div class="head">
+    <div>
+      <h1>월말 회계 입력 자료</h1>
+      <div class="meta">농장: <b>{esc(farm_name)}</b> &nbsp;|&nbsp; 대상 월: <b>{esc(month)}</b><br>출력일시: {esc(made_at)}</div>
+    </div>
+    <table class="sign"><tr><th>작성</th><th>검토</th><th>승인</th></tr><tr><td></td><td></td><td></td></tr></table>
+  </div>
+  <h2>1. 요약</h2>{summary_html}
+  <h2>2. 매입(입고) 내역</h2><p class="note">매입일자가 {esc(month)} 인 매입 · 분류별 소계</p>{purchase_html}
+  <h2>3. 품목 수불부</h2><p class="note">기초 = 전월까지 매입 − 전월까지 사용 · 출고 = 이 달 월말 비용 등록(시험군별 사용량) · 금액은 산출액 기준</p>{ledger_html}
+  <div class="keep"><h2>4. 고정비</h2>{fixed_html}</div>
+  <div class="keep"><h2>5. 시험군별 원가 배분 (월말 정산 결과)</h2>{alloc_html}{alloc_note}</div>
+  <div class="keep"><h2>6-1. 입식 (입식일 · 우시장별 합계)</h2>{admit_sum_html}</div>
+  <div class="keep"><h2>6-2. 출하 · 폐사 개체</h2><p class="note">누적 원가 = 구입원가 + 이 달까지 배분된 사육비</p>{closed_html}</div>
+  <div class="keep"><h2>7. 월말 사육 개체 장부가</h2><p class="note">{esc(month)} 말 기준 사육 중인 개체 · 장부가 = 구입원가 + 이 달까지 배분된 사육비</p>{onhand_html}</div>
+  <h2>[첨부] 입식 개체 명세</h2><p class="note">6-1 합계의 개체별 내역 (증빙용)</p>{admit_html}
+</div>"""
+    page = (f'<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>월말 회계 입력 자료 {esc(farm_name)} {esc(month)}</title><style>{ACCOUNTING_SHEET_CSS}</style></head><body>{body}</body></html>')
+    return True, page
+
+
+def list_accounting_months(db_file):
+    """매입·사용량·고정비·정산·입식·종결 중 하나라도 있는 연월 (최신순)."""
+    conn = db_connect(db_file)
+    try:
+        rows = conn.execute("""
+            SELECT substr(purchase_date, 1, 7) FROM purchase
+            UNION SELECT settlement_month FROM monthly_usage
+            UNION SELECT settlement_month FROM monthly_fixedcost
+            UNION SELECT settlement_month FROM cattle_cost_log
+            UNION SELECT substr(admission_date, 1, 7) FROM cattle
+            UNION SELECT substr(closure_date, 1, 7) FROM cattle
+        """).fetchall()
+    finally:
+        conn.close()
+    return sorted({r[0] for r in rows if r[0] and re.fullmatch(r"\d{4}-\d{2}", str(r[0]))}, reverse=True)
+
+
 def generate_overall_report_html(df_all, farm_order, farm_colors):
     """전체 현황 통합 보고서(요약 카드 + Chart.js 차트 + 표)를 단독 실행 가능한 HTML로 만든다."""
     esc = html.escape
@@ -4249,6 +4547,39 @@ with tab_report:
             )
             st.markdown("###### 미리보기")
             st.iframe(report_html, height=900)
+
+    st.markdown("---")
+    st.subheader("🖨️ 월말 회계 입력 자료")
+    st.markdown("회사 회계 프로그램에 옮겨 적기 위한 인쇄용 자료입니다. 매입 내역 · 품목 수불부(기초·입고·출고·기말) · 고정비 · "
+                "시험군별 원가 배분 · 입식/출하/폐사 · 월말 사육 장부가를 A4 한 묶음으로 만들고, 줄마다 **입력확인(□)** 칸이 있습니다.")
+    acct_months = list_accounting_months(DB_FILE)
+    if not acct_months:
+        st.info("아직 매입·비용·입식 자료가 없습니다.")
+    else:
+        acct_col, _ = st.columns([1, 3])
+        acct_month = acct_col.selectbox("대상 월", acct_months, key="acct_month_select")
+        if acct_col.button("🖨️ 회계 입력 자료 만들기", type="primary", key="gen_acct_btn", width="stretch"):
+            ok, result = generate_accounting_sheet(DB_FILE, selected_farm, acct_month)
+            if ok:
+                st.session_state["acct_html"] = result
+                st.session_state["acct_month_generated"] = acct_month
+            else:
+                st.session_state.pop("acct_html", None)
+                st.error(result)
+
+        acct_html = st.session_state.get("acct_html")
+        if acct_html and st.session_state.get("acct_month_generated") == acct_month:
+            st.success(f"'{acct_month}' 회계 입력 자료를 만들었습니다. 내려받은 파일을 열어 **🖨️ 인쇄 / PDF 저장** 버튼을 누르세요.")
+            st.download_button(
+                "⬇️ 인쇄용 파일 내려받기 (HTML)",
+                acct_html.encode("utf-8"),
+                file_name=f"회계입력자료_{selected_farm}_{acct_month}.html",
+                mime="text/html",
+                width="stretch",
+                key="acct_download",
+            )
+            st.markdown("###### 미리보기")
+            st.iframe(acct_html, height=900)
 
 with tab_slaughter:
     st.markdown(
