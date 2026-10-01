@@ -87,7 +87,7 @@ try:
 except OSError:
     MANUAL_BACKUP_DIR = BACKUP_DIR
 
-st.set_page_config(page_title="대구축협 시험농장 관리 시스템", layout="wide", page_icon="🐮")
+st.set_page_config(page_title="대구축협 시험농장 관리 시스템", layout="wide", page_icon="🐂")
 
 APP_CSS = """
 <style>
@@ -1804,7 +1804,7 @@ st.sidebar.markdown(
     f"""
     <div style="display:flex; align-items:center; justify-content:center; gap:10px; padding: 4px 0 8px 0;">
         <img src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 40px;">
-        <span style="font-size: 2.5rem;">🐮</span>
+        <span style="font-size: 2.5rem;">🐂</span>
         <h2 style="margin:0; font-size:1.1rem; text-align:left; white-space:nowrap; word-break:keep-all;">대구축협 시험농장<br>관리 시스템</h2>
     </div>
     """,
@@ -1914,7 +1914,7 @@ def cattle_reset_dialog():
         st.rerun()
 
 
-with st.sidebar.expander("🐄 등록된 개체 전체 삭제"):
+with st.sidebar.expander("🐂 등록된 개체 전체 삭제"):
     st.caption("선택한 농장에 등록된 개체(입식 내역)만 삭제합니다. 시험군·품목 등은 유지됩니다. 실행 직전 자동으로 백업본을 만듭니다.")
     if st.button("개체 전체 삭제 실행", width="stretch", key="open_cattle_reset"):
         st.session_state["show_cattle_reset_dialog"] = True
@@ -2331,11 +2331,11 @@ kpi_cols[5].metric("평균 개월령", avg_months_str,
                    delta="사육중 개체 기준", delta_color="off", delta_arrow="off")
 st.write("")
 
-tab_cattle, tab1, tab0, tab2, tab_report, tab_slaughter = st.tabs(["🐄 개체 관리", "📊 사육 및 재고 현황", "📦 품목·매입 관리", "💰 월말 정산 및 청구 내역", "🧾 결산 리포트", "🥩 도축 성적"])
+tab_cattle, tab1, tab0, tab2, tab_report, tab_slaughter = st.tabs(["🐂 개체 관리", "📊 사육 및 재고 현황", "📦 품목·매입 관리", "💰 월말 정산 및 청구 내역", "🧾 결산 리포트", "🥩 도축 성적"])
 
 # ===== 개체 관리 탭 =====
 with tab_cattle:
-    sub_tab1, sub_tab2, sub_tab3 = st.tabs(["🐮 입식 등록", "📋 상태 변경 / 질병 기록", "📊 전체 현황"])
+    sub_tab1, sub_tab2, sub_tab3 = st.tabs(["🐂 입식 등록", "📋 상태 변경 / 질병 기록", "📊 전체 현황"])
     
     with sub_tab1:
         col_reg1, col_reg2 = st.columns(2)
@@ -2473,7 +2473,7 @@ with tab_cattle:
                                 st.rerun()
 
         with col_reg2:
-            st.subheader("🐮 개체 입식 등록")
+            st.subheader("🐂 개체 입식 등록")
             st.caption("개체를 한 마리씩 등록하거나, 엑셀 파일을 통해 일괄 등록할 수 있습니다.")
             
             groups_for_cattle = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master", conn)
@@ -3136,7 +3136,7 @@ with tab_cattle:
 with tab1:
     col_a, col_b = st.columns(2)
     with col_a:
-        st.subheader("🐄 사육 개체 요약")
+        st.subheader("🐂 사육 개체 요약")
         st.caption("&nbsp;", unsafe_allow_html=True)  # 오른쪽 캡션과 높이를 맞추기 위한 빈 여백
         df_cattle = pd.read_sql("""
             SELECT c.cattle_id as 개체번호, t.test_name as 시험군, c.status as 상태, c.initial_cost as 초기원가
