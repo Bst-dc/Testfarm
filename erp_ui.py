@@ -3165,7 +3165,80 @@ with tab0:
                     total_amt = sum(r[4] for r in rows_to_insert)
                     notify(f"매입 {len(rows_to_insert)}건 등록 완료! ({purchase_date.isoformat()}, 합계 {total_amt:,.0f}원)", icon="✅")
                     st.rerun()
-        
+
+            # ----- 품목 현황 -----
+            # 고른 매입일자가 속한 달의 매입 품목은 바로 보이게 두고,
+            # 월말정산 후 남은 품목과 전체 매입 품목은 접어 두었다가 펼쳐서 본다.
+            num = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right")
+            purchase_month = purchase_date.strftime("%Y-%m")
+            month_df = pd.read_sql("""
+                SELECT i.item_name AS 품목명, i.category AS 분류, COUNT(*) AS 매입건수,
+                       SUM(p.quantity) AS 매입수량, MAX(i.unit) AS 단위, SUM(p.total_amount) AS 매입금액
+                FROM purchase p
+                JOIN item_master i ON p.item_code = i.item_code
+                WHERE substr(p.purchase_date, 1, 7) = ?
+                GROUP BY p.item_code, i.item_name, i.category
+                ORDER BY i.category, i.item_name
+            """, conn, params=(purchase_month,))
+            st.markdown(f"##### 📅 {purchase_month} 매입 품목")
+            if month_df.empty:
+                st.caption(f"{purchase_month}에 매입한 품목이 없습니다. (위 매입일자를 바꾸면 그 달의 매입 품목을 보여 줍니다)")
+            else:
+                month_df["평균단가"] = (month_df["매입금액"] / month_df["매입수량"].where(month_df["매입수량"] != 0)).round(0)
+                st.dataframe(
+                    month_df[["품목명", "분류", "매입건수", "매입수량", "단위", "평균단가", "매입금액"]],
+                    width="stretch", hide_index=True,
+                    column_config={
+                        "매입건수": st.column_config.NumberColumn(width="small"),
+                        "매입수량": num("매입수량"), "평균단가": num("평균단가 (원)"), "매입금액": num("매입금액 (원)"),
+                    },
+                )
+                show_table_total(len(month_df), "매입금액", float(month_df["매입금액"].sum()))
+
+            # 남은 수량·금액 = 매입 누계 - 월말 비용 등록(시험군별 사용량) 누계
+            stock_df = pd.read_sql("""
+                SELECT i.item_name AS 품목명, i.category AS 분류, i.unit AS 단위,
+                       COALESCE((SELECT SUM(p.quantity) FROM purchase p WHERE p.item_code = i.item_code), 0) AS 누적매입수량,
+                       COALESCE((SELECT SUM(p.total_amount) FROM purchase p WHERE p.item_code = i.item_code), 0) AS 누적매입금액,
+                       COALESCE((SELECT SUM(u.total_usage) FROM monthly_usage u WHERE u.item_code = i.item_code), 0) AS 누적사용량,
+                       COALESCE((SELECT SUM(u.calculated_amount) FROM monthly_usage u WHERE u.item_code = i.item_code), 0) AS 누적사용금액
+                FROM item_master i
+                ORDER BY i.category, i.item_name
+            """, conn)
+            stock_df["남은수량"] = stock_df["누적매입수량"] - stock_df["누적사용량"]
+            stock_df["남은금액"] = stock_df["누적매입금액"] - stock_df["누적사용금액"]
+            last_settled = conn.execute("SELECT MAX(settlement_month) FROM cattle_cost_log").fetchone()[0]
+
+            remain_df = stock_df[stock_df["남은수량"] > 0.005].copy()
+            settled_note = f"최근 정산 {last_settled}" if last_settled else "정산 내역 없음"
+            with st.expander(f"📦 월말정산 후 남은 품목 ({len(remain_df)}개 · {settled_note})"):
+                st.caption("남은 수량 = 매입 누계 − 월말 비용 등록의 시험군별 사용량 누계")
+                if remain_df.empty:
+                    st.caption("남은 품목이 없습니다.")
+                else:
+                    remain_df["평균단가"] = (remain_df["남은금액"] / remain_df["남은수량"]).round(0)
+                    st.dataframe(
+                        remain_df[["품목명", "분류", "남은수량", "단위", "평균단가", "남은금액"]],
+                        width="stretch", hide_index=True,
+                        column_config={"남은수량": num("남은 수량"), "평균단가": num("평균단가 (원)"), "남은금액": num("남은 금액 (원)")},
+                    )
+                    show_table_total(len(remain_df), "남은 금액", float(remain_df["남은금액"].sum()))
+
+            all_df = stock_df[stock_df["누적매입수량"] > 0]
+            with st.expander(f"🗂️ 전체 매입 품목 ({len(all_df)}개)"):
+                if all_df.empty:
+                    st.caption("매입한 품목이 없습니다.")
+                else:
+                    st.dataframe(
+                        all_df[["품목명", "분류", "단위", "누적매입수량", "누적매입금액", "누적사용량", "남은수량"]],
+                        width="stretch", hide_index=True,
+                        column_config={
+                            "누적매입수량": num("누적 매입수량"), "누적매입금액": num("누적 매입금액 (원)"),
+                            "누적사용량": num("누적 사용량"), "남은수량": num("남은 수량"),
+                        },
+                    )
+                    show_table_total(len(all_df), "누적 매입금액", float(all_df["누적매입금액"].sum()))
+
         st.markdown("---")
         st.markdown("##### 매입 내역 (체크박스로 삭제 가능)")
         df_purchase = pd.read_sql("""
