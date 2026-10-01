@@ -3519,10 +3519,15 @@ with tab2:
                 current_heads = dict(conn.execute(
                     "SELECT test_group_code, COUNT(*) FROM cattle WHERE status = '사육' GROUP BY test_group_code"
                 ).fetchall())
+                ratio_view = pd.DataFrame([{"시험군": group_name_of.get(g, g), "현재 사육두수": int(current_heads.get(g, 0)),
+                                            "사육일수 (두수×일수)": d, "비율": (d / total_days if total_days > 0 else 0.0)}
+                                           for g, d in sel_days.items()])
+                ratio_view.loc[len(ratio_view)] = {  # 맨 아래 합계 줄 (보여 주기용)
+                    "시험군": "합계", "현재 사육두수": int(ratio_view["현재 사육두수"].sum()),
+                    "사육일수 (두수×일수)": total_days, "비율": 1.0 if total_days > 0 else 0.0,
+                }
                 st.dataframe(
-                    pd.DataFrame([{"시험군": group_name_of.get(g, g), "현재 사육두수": int(current_heads.get(g, 0)),
-                                   "사육일수 (두수×일수)": d, "비율": (d / total_days if total_days > 0 else 0.0)}
-                                  for g, d in sel_days.items()]),
+                    ratio_view,
                     width="stretch", hide_index=True,
                     column_config={
                         "현재 사육두수": st.column_config.NumberColumn("현재 사육두수 (두)", format="localized", alignment="right"),
