@@ -1634,6 +1634,8 @@ table.sign th, table.sign td { border: 1px solid #333; width: 64px; text-align: 
 table.sign td { height: 46px; }
 h2 { font-size: 14px; margin: 18px 0 6px; padding-left: 8px; border-left: 4px solid #2E6B57; }
 .keep { break-inside: avoid-page; page-break-inside: avoid; }
+h3 { font-size: 13px; margin: 10px 0 4px; }
+.warn { color: #B42318; font-weight: 700; font-size: 11px; margin: 2px 0 6px; }
 .note { color: #555; font-size: 11px; margin: 0 0 6px; }
 table.t { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
 table.t th, table.t td { border: 1px solid #9ca3af; padding: 4px 6px; }
@@ -1659,6 +1661,69 @@ tr { page-break-inside: avoid; }
   h2 { page-break-after: avoid; }
 }
 """
+
+
+# 회사 회계 프로그램 전표 (계정 대응표). 다른 전표가 생기면 여기에 같은 형식으로 추가한다.
+#   amount 의 값: "fixed_total" = 그 달 고정비 전체 합계, "usage_total" = 그 달 시험군별 사용량(산출액) 전체 합계,
+#                 ["인건비", ...] = 고정비 내역 중 해당 지출 항목들의 합계
+#   basis: 인쇄물의 '근거' 칸에 적는 설명
+ACCOUNTING_JOURNALS = [
+    {
+        "name": "사양관리비 원가배부",
+        "lines": [
+            ("차", "21610203", "동물<소>-사양관리비원", "fixed_total", "농장 고정비 합계"),
+            ("대", "21610401", "동물<사양관리비>임금", ["인건비", "시험사양수고비"], "인건비, 시험사양수고비"),
+            ("대", "21610409", "동물<사양관리비>기타", ["전기세", "CCTV사용료", "우수등급장려금"], "전기세, CCTV사용료, 우수등급장려금"),
+            ("대", "21610406", "동물<사양관리비>-가축공제", ["가축보험료"], "가축보험료"),
+        ],
+    },
+    {
+        "name": "기타저장품 원가배부",
+        "lines": [
+            ("차", "21610204", "동물<소>기타저장품원", "usage_total", "시험군별 사용량 (시험군 상관없이 전체)"),
+            ("대", "21492108", "기타저장품<생축>", "usage_total", "시험군별 사용량 (시험군 상관없이 전체)"),
+        ],
+    },
+]
+
+
+def build_journal_html(fixed, usage_total, esc, won, chk):
+    """ACCOUNTING_JOURNALS 대응표대로 그 달 전표(차변·대변) 표를 만든다."""
+    fixed_by_item = fixed.groupby("expense_item")["total_billed_amount"].sum()
+    fixed_total = float(fixed["total_billed_amount"].sum())
+    mapped = {item for j in ACCOUNTING_JOURNALS for *_, amount, _ in j["lines"] if isinstance(amount, list) for item in amount}
+    parts = []
+    for j in ACCOUNTING_JOURNALS:
+        rows, dr_sum, cr_sum = [], 0.0, 0.0
+        for side, code, name, amount, basis in j["lines"]:
+            if amount == "fixed_total":
+                value = fixed_total
+            elif amount == "usage_total":
+                value = float(usage_total)
+            else:
+                value = float(sum(fixed_by_item.get(item, 0) for item in amount))
+                hit = [f"{item} {won(fixed_by_item[item])}" for item in amount if item in fixed_by_item]
+                basis = " + ".join(hit) if hit else f"{basis} (이 달 없음)"
+            if side == "차":
+                dr_sum += value
+            else:
+                cr_sum += value
+            dr, cr = (won(value), "") if side == "차" else ("", won(value))
+            rows.append(f'<tr><td class="c">{esc(side)}</td><td class="c">{esc(code)}</td><td>{esc(name)}</td>'
+                        f'<td class="n">{dr}</td><td class="n">{cr}</td><td>{esc(basis)}</td>{chk}</tr>')
+        ok = abs(dr_sum - cr_sum) < 0.5
+        rows.append(f'<tr class="total"><td colspan="3">합계{"" if ok else " — 차변·대변 불일치"}</td>'
+                    f'<td class="n">{won(dr_sum)}</td><td class="n">{won(cr_sum)}</td><td></td><td></td></tr>')
+        note = ""
+        if not ok:
+            unmapped = [f"{item} {won(v)}" for item, v in fixed_by_item.items() if item not in mapped]
+            note = ('<p class="warn">※ 차변과 대변이 ' + won(abs(dr_sum - cr_sum)) + '원 다릅니다.'
+                    + (f' 계정이 정해지지 않은 고정비 항목: {esc(", ".join(unmapped))}' if unmapped else '') + '</p>')
+        parts.append(
+            f'<div class="keep"><h3>{esc(j["name"])}</h3><table class="t"><thead><tr><th>차/대</th><th>계정코드</th><th>계정명</th>'
+            f'<th>차변(원)</th><th>대변(원)</th><th>근거</th><th>입력<br>확인</th></tr></thead><tbody>'
+            + "".join(rows) + f"</tbody></table>{note}</div>")
+    return "".join(parts)
 
 
 def generate_accounting_sheet(db_file, farm_name, month):
@@ -1873,6 +1938,8 @@ def generate_accounting_sheet(db_file, farm_name, month):
             alloc_note = (f'<p class="note">※ 등록 금액과의 차이: {", ".join(parts)} — '
                           '개체별로 나눌 때 원 미만을 반올림해서 생기는 차이입니다.</p>')
 
+    journal_html = build_journal_html(fixed, active["out_amt"].sum(), esc, won, chk)
+
     made_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     body = f"""
 <div class="toolbar"><button onclick="window.print()">🖨️ 인쇄 / PDF 저장</button></div>
@@ -1885,14 +1952,15 @@ def generate_accounting_sheet(db_file, farm_name, month):
     <table class="sign"><tr><th>작성</th><th>검토</th><th>승인</th></tr><tr><td></td><td></td><td></td></tr></table>
   </div>
   <h2>1. 요약</h2>{summary_html}
-  <h2>2. 매입(입고) 내역</h2><p class="note">매입일자가 {esc(month)} 인 매입 · 분류별 소계</p>{purchase_html}
-  <h2>3. 품목 수불부</h2><p class="note">기초 = 전월까지 매입 − 전월까지 사용 · 출고 = 이 달 월말 비용 등록(시험군별 사용량) · 금액은 산출액 기준</p>{ledger_html}
-  <div class="keep"><h2>4. 고정비</h2>{fixed_html}</div>
-  <div class="keep"><h2>5. 시험군별 원가 배분 (월말 정산 결과)</h2>{alloc_html}{alloc_note}</div>
-  <div class="keep"><h2>6-1. 입식 (입식일 · 우시장별 합계)</h2>{admit_sum_html}</div>
-  <div class="keep"><h2>6-2. 출하 · 폐사 개체</h2><p class="note">누적 원가 = 구입원가 + 이 달까지 배분된 사육비</p>{closed_html}</div>
-  <div class="keep"><h2>7. 월말 사육 개체 장부가</h2><p class="note">{esc(month)} 말 기준 사육 중인 개체 · 장부가 = 구입원가 + 이 달까지 배분된 사육비</p>{onhand_html}</div>
-  <h2>[첨부] 입식 개체 명세</h2><p class="note">6-1 합계의 개체별 내역 (증빙용)</p>{admit_html}
+  <h2>2. 회계 전표 (원가배부)</h2><p class="note">회계 프로그램 전표 입력용 · 차변 합계와 대변 합계가 다르면 빨간 글씨로 표시됩니다</p>{journal_html}
+  <h2>3. 매입(입고) 내역</h2><p class="note">매입일자가 {esc(month)} 인 매입 · 분류별 소계</p>{purchase_html}
+  <h2>4. 품목 수불부</h2><p class="note">기초 = 전월까지 매입 − 전월까지 사용 · 출고 = 이 달 월말 비용 등록(시험군별 사용량) · 금액은 산출액 기준</p>{ledger_html}
+  <div class="keep"><h2>5. 고정비</h2>{fixed_html}</div>
+  <div class="keep"><h2>6. 시험군별 원가 배분 (월말 정산 결과)</h2>{alloc_html}{alloc_note}</div>
+  <div class="keep"><h2>7-1. 입식 (입식일 · 우시장별 합계)</h2>{admit_sum_html}</div>
+  <div class="keep"><h2>7-2. 출하 · 폐사 개체</h2><p class="note">누적 원가 = 구입원가 + 이 달까지 배분된 사육비</p>{closed_html}</div>
+  <div class="keep"><h2>8. 월말 사육 개체 장부가</h2><p class="note">{esc(month)} 말 기준 사육 중인 개체 · 장부가 = 구입원가 + 이 달까지 배분된 사육비</p>{onhand_html}</div>
+  <h2>[첨부] 입식 개체 명세</h2><p class="note">7-1 합계의 개체별 내역 (증빙용)</p>{admit_html}
 </div>"""
     page = (f'<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
             f'<title>월말 회계 입력 자료 {esc(farm_name)} {esc(month)}</title><style>{ACCOUNTING_SHEET_CSS}</style></head><body>{body}</body></html>')
