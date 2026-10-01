@@ -4048,6 +4048,47 @@ with tab2:
                         "평균_누적_원가": money("평균 누적 원가 (원)"),
                     },
                 )
+
+            # 엑셀 저장: 개체별 원가 / 두당 평균 / 시험군별 평균(시험군이 둘 이상일 때)
+            excel_cattle = (
+                df_log.merge(group_of, on="cattle_id", how="left")
+                .fillna({"시험군": "(시험군 없음)"})
+                [["cattle_id", "시험군", "settlement_month", "변동비_할당", "고정비_할당", "당월_추가원가",
+                  "구입원가", "누적_사육비", "누적_원가"]]
+                .rename(columns={
+                    "cattle_id": "이표번호", "settlement_month": "정산연월", "변동비_할당": "변동비 할당 (원)",
+                    "고정비_할당": "고정비 할당 (원)", "당월_추가원가": "당월 추가원가 (원)", "구입원가": "구입원가 (원)",
+                    "누적_사육비": "누적 사육비 (원)", "누적_원가": "누적 원가 (원)",
+                })
+            )
+            excel_avg = pd.DataFrame([{
+                "정산연월": target_month, "두수": len(df_log),
+                "평균 당월 추가원가 (원)": df_log['당월_추가원가'].mean(), "평균 구입원가 (원)": df_log['구입원가'].mean(),
+                "평균 누적 사육비 (원)": df_log['누적_사육비'].mean(), "평균 누적 원가 (원)": df_log['누적_원가'].mean(),
+            }])
+            excel_group = by_group.rename(columns={
+                "평균_당월_추가원가": "평균 당월 추가원가 (원)", "평균_구입원가": "평균 구입원가 (원)",
+                "평균_누적_사육비": "평균 누적 사육비 (원)", "평균_누적_원가": "평균 누적 원가 (원)",
+            })
+            xlsx_buf = io.BytesIO()
+            with pd.ExcelWriter(xlsx_buf, engine="xlsxwriter") as xw:
+                sheets = [("개체별 원가", excel_cattle), ("두당 평균", excel_avg)]
+                if len(by_group) > 1:
+                    sheets.append(("시험군별 평균", excel_group))
+                won = xw.book.add_format({"num_format": "#,##0"})
+                for sheet_name, sheet_df in sheets:
+                    sheet_df.to_excel(xw, sheet_name=sheet_name, index=False)
+                    ws = xw.sheets[sheet_name]
+                    for i, col in enumerate(sheet_df.columns):
+                        width = max(12, min(40, int(max(len(str(col)) * 1.8, sheet_df[col].astype(str).str.len().max() * 1.2)) + 2))
+                        ws.set_column(i, i, width, won if pd.api.types.is_numeric_dtype(sheet_df[col]) else None)
+                    ws.freeze_panes(1, 0)
+            st.download_button(
+                "📥 엑셀로 저장", xlsx_buf.getvalue(),
+                file_name=f"{selected_farm}_개체별원가_{target_month}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch", key="cost_log_xlsx",
+            )
     except:
         st.info("아직 정산된 내역이 없습니다.")
 
