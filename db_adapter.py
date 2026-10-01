@@ -221,6 +221,10 @@ def _ident(name):
     return '"%s"' % name.replace('"', '""')
 
 
+IDLE_IN_TRANSACTION_TIMEOUT = 60  # 초. 화면 한 번 그리는 시간보다 충분히 길게.
+DDL_LOCK_TIMEOUT = "3s"           # 스키마 점검 DDL 이 잠금을 기다리는 최대 시간
+
+
 class _Pool:
     """Streamlit 은 버튼을 누를 때마다 스크립트 전체를 다시 실행하고 그때마다 연결을 여러 번 연다.
     Supabase 연결은 한 번 맺는 데 수백 ms 가 걸리므로, 닫힌 연결을 버리지 않고 모아 두었다 다시 쓴다."""
@@ -247,6 +251,14 @@ class _Pool:
         try:
             raw = psycopg2.connect(url, connect_timeout=15, application_name="testfarm-erp",
                                    keepalives=1, keepalives_idle=30)
+            # Streamlit 은 화면을 그리는 도중 브라우저가 닫히면 스크립트를 멈추는데, 그때 열려 있던 연결은
+            # 조회 트랜잭션이 열린 채('idle in transaction') 남아 표 잠금을 쥐고 있게 된다. 그러면 스키마 점검·
+            # 리셋·복원 같은 DDL 이 잠금을 기다리다 2분 뒤 시간 초과로 실패한다.
+            # 이런 연결은 서버가 일정 시간 뒤 끊도록 한다 (끊긴 연결은 다음에 쓸 때 Connection._run 이 다시 연결).
+            raw.autocommit = True
+            with raw.cursor() as c:
+                c.execute("SET idle_in_transaction_session_timeout = '%ds'" % IDLE_IN_TRANSACTION_TIMEOUT)
+            raw.autocommit = False
         except psycopg2.Error as e:
             raise OperationalError("Supabase 연결 실패: %s" % e) from None
         return raw, None
@@ -615,15 +627,41 @@ def _run_ddl(c, schema, ddl, drop_first):
     c.execute(ddl)
 
 
-def ensure_schema(db_file, ddl, extra_sql=()):
+def _schema_complete(c, schema, required_tables, required_columns, required_triggers):
+    """필요한 표·컬럼·트리거가 이미 다 있는지 카탈로그만 읽어 확인한다 (표 잠금을 잡지 않는다)."""
+    c.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = %s", (schema,))
+    tables = {r[0] for r in c.fetchall()}
+    if not set(required_tables) <= tables:
+        return False
+    c.execute("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = %s", (schema,))
+    columns = {(r[0], r[1]) for r in c.fetchall()}
+    if not set(required_columns) <= columns:
+        return False
+    c.execute("SELECT t.tgname FROM pg_trigger t JOIN pg_class r ON r.oid = t.tgrelid "
+              "JOIN pg_namespace n ON n.oid = r.relnamespace WHERE n.nspname = %s AND NOT t.tgisinternal", (schema,))
+    return set(required_triggers) <= {r[0] for r in c.fetchall()}
+
+
+def ensure_schema(db_file, ddl, extra_sql=(), required_tables=(), required_columns=(), required_triggers=()):
     """스키마와 표를 만든다(이미 있으면 그대로). extra_sql 은 나중에 추가된 컬럼 등 보완용 문장.
-    프로세스당 스키마별로 한 번만 실제로 실행한다."""
+    프로세스당 스키마별로 한 번만 실제로 실행한다.
+
+    CREATE TRIGGER / ALTER TABLE 은 '이미 있어도' 표에 배타 잠금을 잡으므로, 다른 연결이 그 표를 읽는 중이면
+    기다리게 된다. 그래서 required_* 로 넘긴 것이 이미 다 있으면 DDL 을 아예 실행하지 않고,
+    실행할 때도 잠금은 DDL_LOCK_TIMEOUT 까지만 기다린다. 기다리다 실패하면(표는 이미 있으니) 이번에는
+    건너뛰고 다음 실행 때 다시 점검한다 — 화면이 멈추거나 오류로 끝나지 않게."""
     schema = schema_for(db_file)
     if schema in _ensured:
         return
     raw = _raw_connection()
     try:
         with raw.cursor() as c:
+            if required_tables and _schema_complete(c, schema, required_tables, required_columns, required_triggers):
+                raw.rollback()
+                _exists.add(schema)
+                _ensured.add(schema)
+                return
+            c.execute("SET LOCAL lock_timeout = '%s'" % DDL_LOCK_TIMEOUT)
             _run_ddl(c, schema, ddl, drop_first=False)
             for stmt in extra_sql:
                 c.execute(stmt)
@@ -633,6 +671,8 @@ def ensure_schema(db_file, ddl, extra_sql=()):
         _ensured.add(schema)
     except psycopg2.Error as e:
         raw.rollback()
+        if getattr(e, "pgcode", None) == "55P03" and database_exists(db_file):  # lock_not_available
+            return
         raise _wrap_error(e) from None
     finally:
         _POOL.put(raw, None)

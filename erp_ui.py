@@ -652,11 +652,14 @@ FARM_CONFIG = load_farms()
 
 def _migrate_schema_pg(db_file):
     # 프로세스당 농장별로 한 번만 실제로 점검한다 (db_adapter 가 기억해 둔다).
+    # 아래 표·컬럼·트리거가 이미 다 있으면 DDL 을 실행하지 않는다 (잠금을 잡지 않게).
     db_adapter.ensure_schema(db_file, PG_DDL, extra_sql=[
         "ALTER TABLE testgroup_master ADD COLUMN IF NOT EXISTS location_mapping TEXT",
         "ALTER TABLE purchase ADD COLUMN IF NOT EXISTS unit TEXT",
         "ALTER TABLE item_master ADD COLUMN IF NOT EXISTS unit TEXT",
-    ])
+    ], required_tables=DB_TABLES,
+       required_columns=[("testgroup_master", "location_mapping"), ("purchase", "unit"), ("item_master", "unit")],
+       required_triggers=["trg_after_insert_purchase"])
 
 # ========== DB 연결 관리 ==========
 # Streamlit은 버튼/폼을 누를 때마다 스크립트를 처음부터 다시 실행한다.
