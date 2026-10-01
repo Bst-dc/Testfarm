@@ -3496,9 +3496,41 @@ with tab2:
             
             usage_month = cost_month  # 탭 맨 위의 공통 정산연월
 
-            usage_group_label = st.selectbox("시험군", list(group_options.keys()), key="usage_group_sel")
+            if "usage_groups_sel" not in st.session_state:
+                st.session_state["usage_groups_sel"] = list(group_options.keys())[:1]
+            usage_group_labels = st.multiselect(
+                "시험군 (여러 개 선택 가능)", list(group_options.keys()), key="usage_groups_sel",
+                help="여러 시험군을 고르면 입력한 사용량을 그 달 시험군별 사육일수(두수×일수) 비율로 나눠 등록합니다.",
+            )
+            usage_group_codes = [group_options[l] for l in usage_group_labels]
+            group_name_of = dict(zip(groups_df['test_group_code'], groups_df['test_name']))
 
-            # 한 시험군의 여러 품목을 표에 줄줄이 입력해 한 번에 등록한다.
+            # 여러 시험군에 나눌 때는 월말 정산(일할계산)과 같은 기준인 '그 달 사육일수 합계'(두수×일수) 비율을 쓴다.
+            usage_group_ratios = {}
+            if len(usage_group_codes) == 1:
+                usage_group_ratios = {usage_group_codes[0]: 1.0}
+            elif len(usage_group_codes) > 1 and re.fullmatch(r"\d{4}-\d{2}", usage_month.strip()):
+                month_days = settlement_cattle(conn, usage_month.strip()).groupby("test_group_code")["rearing_days"].sum()
+                sel_days = {g: float(month_days.get(g, 0)) for g in usage_group_codes}
+                total_days = sum(sel_days.values())
+                if total_days > 0:
+                    usage_group_ratios = {g: d / total_days for g, d in sel_days.items() if d > 0}
+                st.dataframe(
+                    pd.DataFrame([{"시험군": group_name_of.get(g, g), "사육일수 (두수×일수)": d,
+                                   "비율": (d / total_days if total_days > 0 else 0.0)} for g, d in sel_days.items()]),
+                    width="stretch", hide_index=True,
+                    column_config={
+                        "사육일수 (두수×일수)": st.column_config.NumberColumn(format="localized", alignment="right"),
+                        "비율": st.column_config.NumberColumn(format="percent", alignment="right"),
+                    },
+                )
+                zero = [group_name_of.get(g, g) for g, d in sel_days.items() if d <= 0]
+                if total_days <= 0:
+                    st.warning(f"{usage_month.strip()}에 선택한 시험군들의 사육 개체가 없어 나눌 수 없습니다.")
+                elif zero:
+                    st.caption(f"{usage_month.strip()}에 사육일수가 없는 시험군은 배분에서 빠집니다: {', '.join(zero)}")
+
+            # 여러 품목을 표에 줄줄이 입력해 한 번에 등록한다 (시험군을 여러 개 고르면 위 비율로 나눠 등록).
             # 표에 남은 수량을 함께 보여 줘 재고를 보며 입력할 수 있게 한다.
             stock_state = {
                 r['item_code']: {
@@ -3587,6 +3619,35 @@ with tab2:
                                ", ".join(f"{p_['품목']} ({p_['등록 후 남은 수량']:,.1f} {p_['단위']})" for p_ in short) +
                                " — 매입 등록이 빠지지 않았는지 확인하세요.")
 
+            # 품목별 사용량·산출액을 시험군 비율로 나눈다. 반올림 오차는 마지막 시험군에 몰아 합계가 정확히 맞게 한다.
+            def _split(total, ratio_items):
+                parts, acc = [], 0.0
+                for i, (g, r) in enumerate(ratio_items):
+                    v = round(total - acc, 2) if i == len(ratio_items) - 1 else round(total * r, 2)
+                    acc += v
+                    parts.append((g, v))
+                return parts
+
+            ratio_items = list(usage_group_ratios.items())
+            usage_split_rows = []  # (시험군코드, 품목코드, 사용량, 적용단가, 산출액)
+            if ratio_items:
+                for code, qty, price, amount in usage_rows:
+                    for (g, q_g), (_, a_g) in zip(_split(qty, ratio_items), _split(amount, ratio_items)):
+                        usage_split_rows.append((g, code, q_g, round(a_g / q_g, 2) if q_g else price, a_g))
+            if len(ratio_items) > 1 and usage_split_rows:
+                item_name_of = dict(zip(items_df2['item_code'], items_df2['item_name']))
+                st.markdown("###### 시험군별 배분 결과")
+                st.dataframe(
+                    pd.DataFrame([{"시험군": group_name_of.get(g, g), "품목": item_name_of.get(c, c),
+                                   "배분 사용량": q, "적용단가": p, "산출액": a} for g, c, q, p, a in usage_split_rows]),
+                    width="stretch", hide_index=True,
+                    column_config={
+                        "배분 사용량": st.column_config.NumberColumn(format="localized", alignment="right"),
+                        "적용단가": st.column_config.NumberColumn("적용단가 (원)", format="localized", alignment="right"),
+                        "산출액": st.column_config.NumberColumn("산출액 (원)", format="localized", alignment="right"),
+                    },
+                )
+
             if st.button("사용량 일괄 등록", type="primary", width="stretch", key="submit_usage_btn"):
                 if not re.fullmatch(r"\d{4}-\d{2}", usage_month.strip()):
                     st.warning("정산연월(YYYY-MM, 예: 2026-04)을 올바르게 입력하세요.")
@@ -3594,23 +3655,27 @@ with tab2:
                     st.warning("등록하지 않았습니다. 아래 품목을 확인하세요.\n\n" + "\n".join(f"- {p_}" for p_ in usage_problems))
                 elif not usage_rows:
                     st.warning("사용한 품목 옆에 사용량을 입력하세요.")
+                elif not usage_group_codes:
+                    st.warning("시험군을 하나 이상 고르세요.")
+                elif not usage_split_rows:
+                    st.warning("선택한 시험군들에 이 달 사육 개체가 없어 사용량을 나눌 수 없습니다. 시험군이나 정산연월을 확인하세요.")
                 else:
                     usage_month = usage_month.strip()
-                    sel_group = group_options[usage_group_label]
                     write_conn = db_connect(DB_FILE)
                     try:
                         # 한 트랜잭션으로 넣어 일부만 들어가는 일이 없게 한다.
                         write_conn.executemany(
                             "INSERT INTO monthly_usage (settlement_month, test_group_code, item_code, total_usage, applied_price, calculated_amount) VALUES (?, ?, ?, ?, ?, ?)",
-                            [(usage_month, sel_group, code, qty, price, amount) for code, qty, price, amount in usage_rows],
+                            [(usage_month, g, code, qty, price, amount) for g, code, qty, price, amount in usage_split_rows],
                         )
                         write_conn.commit()
                     finally:
                         write_conn.close()
                     st.session_state["usage_view_month"] = usage_month
                     st.session_state["_usage_entry_ver"] = usage_ver + 1
-                    notify(f"사용량 {len(usage_rows)}건 등록 완료! [{usage_month}] {usage_group_label} | "
-                           f"산출액 합계 {sum(r[3] for r in usage_rows):,.0f}원", icon="✅")
+                    group_text = ", ".join(group_name_of.get(g, g) for g, _ in ratio_items)
+                    notify(f"사용량 {len(usage_rows)}품목 → {len(usage_split_rows)}건 등록 완료! [{usage_month}] {group_text} | "
+                           f"산출액 합계 {sum(r[4] for r in usage_split_rows):,.0f}원", icon="✅")
                     st.rerun()
         
         st.markdown("---")
