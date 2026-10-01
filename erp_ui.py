@@ -1633,6 +1633,16 @@ selected_farm = st.sidebar.radio(
     help="전체 현황 대시보드를 보거나, 정산을 수행할 농장을 선택하세요."
 )
 
+# 농장마다 품목·재고·매입 데이터는 따로(스키마별로) 저장되지만, 화면의 입력 상태(입력표에 넣던 값,
+# 편집표의 저장 안 한 수정, 정산연월 등)는 세션 하나에 같은 키로 남는다. 그대로 두면 선산에서 입력하던
+# 매입 줄이나 품목표 수정이 고아 화면에 따라와 고아 데이터에 저장될 수 있으므로, 농장을 바꾸면 비운다.
+_SESSION_KEYS_KEPT_ACROSS_FARMS = {"_authed", "_open_db_conns", "_pending_toasts", "_active_farm"}
+if st.session_state.get("_active_farm") != selected_farm:
+    if "_active_farm" in st.session_state:
+        for _k in [k for k in st.session_state.keys() if k not in _SESSION_KEYS_KEPT_ACROSS_FARMS]:
+            del st.session_state[_k]
+    st.session_state["_active_farm"] = selected_farm
+
 with st.sidebar.expander("➕ 새 농장 추가"):
     with st.form("add_farm_form", clear_on_submit=True):
         new_farm_name = st.text_input("새 농장 이름")
