@@ -126,7 +126,7 @@ html, body, [class*="st-"] {
     color: var(--farm-ink);
 }
 .block-container, [data-testid="stMainBlockContainer"] {
-    padding-top: 3.6rem !important;
+    padding-top: 4.6rem !important;
     padding-bottom: 4rem !important;
     padding-left: 2.5rem !important;
     padding-right: 2.5rem !important;
@@ -221,7 +221,10 @@ div[data-testid="stTabs"] div[role="tablist"] {
     gap: 8px;
     border-bottom: none;
     padding-bottom: 8px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    overflow-y: hidden;
+    scrollbar-width: thin;
 }
 div[data-testid="stTab"] {
     background-color: #FFFFFF !important;
@@ -312,9 +315,127 @@ div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
 
 /* ---------- 알림 ---------- */
 div[data-testid="stAlert"] > div { border-radius: 12px !important; }
+
+/* ================= 레이아웃 공통 값 (C) ================= */
+:root {
+    --farm-radius: 12px;      /* 카드·폼·표·expander 모서리 */
+    --farm-btn-h: 2.6rem;     /* 버튼 높이 */
+}
+div[data-testid="stMetric"], div[data-testid="stForm"], div[data-testid="stExpander"] details,
+div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
+    border-radius: var(--farm-radius) !important;
+}
+div[data-testid="stMetric"], div[data-testid="stForm"] { box-shadow: var(--farm-shadow) !important; }
+.stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
+    min-height: var(--farm-btn-h);
+    border-radius: 10px !important;
+}
+.farm-title { font-size: 1.9rem; line-height: 1.25; word-break: keep-all; }
+.farm-title .title-short { display: none; }
+
+/* ---------- 1. 가로 스크롤 방지 ---------- */
+html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] { overflow-x: hidden !important; }
+[data-testid="stMainBlockContainer"] {
+    max-width: min(1680px, 100%) !important;
+    container-type: inline-size;      /* 아래 @container 규칙의 기준 = 본문 폭 (사이드바 제외) */
+    container-name: farm-main;
+}
+.block-container * { scroll-margin-top: 5rem; }
+
+/* ---------- 2. KPI 카드: 숫자는 폭에 맞게 크기 자동 축소, 라벨 줄바꿈 허용 ---------- */
+div[data-testid="stMetricValue"] { font-size: clamp(1.05rem, 2.3cqi, 1.75rem) !important; }
+div[data-testid="stMetricLabel"] p { font-size: clamp(0.8rem, 1.2cqi, 0.95rem) !important; line-height: 1.3; }
+div[data-testid="stMetric"] { padding: 14px 16px !important; min-width: 0; }
+
+/* ---------- 4. 탭 버튼 줄바꿈 금지 ---------- */
+div[data-testid="stTab"] { flex: 0 0 auto !important; white-space: nowrap; }
+
+/* ---------- 11. 위험한 버튼 (key 가 danger_ 로 시작) ---------- */
+[class*="st-key-danger_"] button {
+    background: #FFF5F5 !important;
+    border: 1px solid #E8A9A4 !important;
+    color: #B42318 !important;
+}
+[class*="st-key-danger_"] button p { color: #B42318 !important; font-weight: 700 !important; }
+[class*="st-key-danger_"] button:hover:not(:disabled) { background: #FDE7E5 !important; border-color: #B42318 !important; }
+[class*="st-key-danger_"] button:disabled { opacity: 0.55; }
+
+/* ---------- 17. 준비중 화면 ---------- */
+.farm-coming { background: var(--farm-card); border: 1px solid var(--farm-line); border-radius: var(--farm-radius);
+               box-shadow: var(--farm-shadow); padding: 22px 24px; }
+.farm-coming h3 { margin: 0 0 6px 0; }
+.farm-coming p { color: var(--farm-muted); margin: 0 0 16px 0; }
+.farm-badge { display: inline-block; font-size: 0.8rem; font-weight: 800; color: #9A5B00; background: #FFF3D6;
+              border: 1px solid #F2D49B; border-radius: 999px; padding: 2px 10px; vertical-align: middle; margin-left: 6px; }
+.farm-coming-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.farm-coming-card { border: 1px dashed var(--farm-line); border-radius: 10px; padding: 14px 16px; background: var(--farm-soft); }
+.farm-coming-card b { display: block; font-size: 1.05rem; margin-bottom: 4px; }
+.farm-coming-card span { color: var(--farm-muted); font-size: 0.88rem; }
+
+/* ---------- C. 사이드바 간격 줄이기 ---------- */
+section[data-testid="stSidebar"] hr { margin: 0.5rem 0 !important; }
+section[data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stRadioOption"] {
+    padding: 12px 16px !important;
+    margin-bottom: 8px !important;
+}
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding-top: 0.5rem; padding-bottom: 1rem; }
+
+/* ================= 반응형: 본문 폭 기준 ================= */
+/* 본문 폭 900px 미만 (예: 창 800px + 사이드바 열림 → 본문 약 450px) */
+@container farm-main (max-width: 900px) {
+    /* 5. 2열 화면은 위아래 1열로 */
+    div[data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; }
+    div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+        flex: 1 1 100% !important; width: 100% !important; min-width: 100% !important;
+    }
+    /* 6. 열 안의 작은 칸(폼 입력칸, 필터)은 한 줄 최대 2칸 */
+    div[data-testid="stColumn"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
+    [class*="st-key-grid2_"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+        flex: 1 1 calc(50% - 0.5rem) !important; width: calc(50% - 0.5rem) !important; min-width: calc(50% - 0.5rem) !important;
+    }
+    /* 2. KPI: 600~900px 은 3개씩 */
+    [class*="st-key-kpi_"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+        flex: 1 1 calc(33.333% - 0.67rem) !important; width: calc(33.333% - 0.67rem) !important;
+        min-width: calc(33.333% - 0.67rem) !important;
+    }
+    /* 3. 본문 제목: 로고는 사이드바에만, 제목은 짧게 */
+    .farm-title-logo { display: none !important; }
+    .farm-title { font-size: 1.35rem; }
+    .farm-title .title-long { display: none; }
+    .farm-title .title-short { display: inline; }
+    .farm-coming-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* 본문 폭 600px 미만: KPI 2개씩 */
+@container farm-main (max-width: 600px) {
+    [class*="st-key-kpi_"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+        flex: 1 1 calc(50% - 0.5rem) !important; width: calc(50% - 0.5rem) !important; min-width: calc(50% - 0.5rem) !important;
+    }
+}
+/* 창 폭 기준: 좁은 창에서는 본문 좌우 여백을 줄인다 */
+@media (max-width: 900px) {
+    .block-container, [data-testid="stMainBlockContainer"] {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+}
+@media (max-width: 600px) {
+    .block-container, [data-testid="stMainBlockContainer"] { padding-top: 4rem !important; }
+}
 </style>
 """
 st.markdown(APP_CSS, unsafe_allow_html=True)
+
+
+def farm_dataframe(data=None, **kwargs):
+    """st.dataframe 과 같다. 빈 값(None)을 'None' 대신 '-' 로 보여 준다."""
+    kwargs.setdefault("placeholder", "-")
+    return st.dataframe(data, **kwargs)
+
+
+def farm_data_editor(data, **kwargs):
+    """st.data_editor 와 같다. 빈 값(None)을 'None' 대신 '-' 로 보여 준다 (입력표는 placeholder="" 로 비워 둔다)."""
+    kwargs.setdefault("placeholder", "-")
+    return st.data_editor(data, **kwargs)
 
 
 def notify(message, icon="✅"):
@@ -359,7 +480,8 @@ def month_view_select(conn, table, key, default_month):
     if key not in st.session_state:
         st.session_state[key] = max(months) if months else default_month
     months = sorted(set(months) | {default_month, st.session_state[key]}, reverse=True)
-    return st.selectbox("조회 연월", months, key=key)
+    left, _ = st.columns([1, 3])  # 짧은 선택값이 칸 전체로 늘어나지 않게
+    return left.selectbox("조회 연월", months, key=key)
 
 
 def item_entry_table(key, codes, names, columns, info=None, name_label="품목"):
@@ -378,8 +500,8 @@ def item_entry_table(key, codes, names, columns, info=None, name_label="품목")
         df[col] = pd.Series([None] * len(df), dtype="float")
     # 품목 구성이 바뀌면(품목 추가·삭제) 줄이 달라지므로 편집표 키도 바꾼다.
     sig = hashlib.md5("|".join(map(str, codes)).encode("utf-8")).hexdigest()[:10]
-    edited = st.data_editor(
-        df, width="stretch", hide_index=True, num_rows="fixed",
+    edited = farm_data_editor(
+        df, width="stretch", hide_index=True, num_rows="fixed", placeholder="",
         disabled=["코드", "항목", *info], column_order=["항목", *info, *columns],
         key=f"{key}_editor_{ver}_{sig}",
         column_config={
@@ -404,7 +526,7 @@ def normalize_item_name(name):
 @st.dialog("⚠️ 중복된 품목이 있습니다")
 def duplicate_item_dialog(message, dup_df):
     st.warning(message)
-    st.dataframe(dup_df, width="stretch", hide_index=True)
+    farm_dataframe(dup_df, width="stretch", hide_index=True)
     st.caption("품목명은 띄어쓰기·대소문자를 무시하고 비교합니다. 다른 품목이면 이름을 구분되게 바꿔 주세요.")
     if st.button("확인", type="primary", width="stretch"):
         st.rerun()
@@ -447,7 +569,7 @@ def editor_changes(original, edited, id_col, cols):
 def confirm_delete_dialog(message, preview_df, on_confirm):
     """삭제가 들어간 저장은 지워질 줄을 보여 주고 한 번 더 확인받은 뒤 실행한다."""
     st.warning(message)
-    st.dataframe(preview_df, width="stretch", hide_index=True)
+    farm_dataframe(preview_df, width="stretch", hide_index=True)
     col_cancel, col_ok = st.columns(2)
     if col_cancel.button("취소", width="stretch"):
         st.rerun()
@@ -1677,10 +1799,10 @@ require_password()
 # 사이드바: 농장 선택
 st.sidebar.markdown(
     f"""
-    <div style="display:flex; align-items:center; justify-content:center; gap:10px; padding: 10px 0 20px 0;">
+    <div style="display:flex; align-items:center; justify-content:center; gap:10px; padding: 4px 0 8px 0;">
         <img src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 40px;">
         <span style="font-size: 2.5rem;">🐮</span>
-        <h2 style="margin:0; font-size:1.2rem; text-align:left;">대구축협 시험농장<br>관리 시스템</h2>
+        <h2 style="margin:0; font-size:1.1rem; text-align:left; white-space:nowrap; word-break:keep-all;">대구축협 시험농장<br>관리 시스템</h2>
     </div>
     """,
     unsafe_allow_html=True,
@@ -1806,10 +1928,10 @@ st.sidebar.markdown("---")
 if selected_farm == "시험농장 전체 현황":
     st.markdown(
         f"""
-        <div style="display:flex; align-items:center; gap:14px; margin-bottom:0.4rem;">
-            <img src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 44px;">
-            <div>
-                <h1 style="margin:0; padding:0; font-size:1.9rem;">대구축협 시험농장 관리 시스템</h1>
+        <div class="farm-header" style="display:flex; align-items:center; gap:14px; margin-bottom:0.4rem;">
+            <img class="farm-title-logo" src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 44px;">
+            <div style="min-width:0;">
+                <h1 class="farm-title" style="margin:0; padding:0;"><span class="title-long">대구축협 시험농장 관리 시스템</span><span class="title-short">시험농장 현황</span></h1>
                 <div style="color:#5F6F66; font-size:0.95rem; margin-top:2px;">
                     등록된 모든 농장의 개체 현황을 한눈에 보는 통합 대시보드
                 </div>
@@ -1846,7 +1968,7 @@ if selected_farm == "시험농장 전체 현황":
         def _share(part):
             return f"{part / total_admission * 100:.1f}%" if total_admission else "0.0%"
 
-        m1, m2, m3, m4, m5 = st.columns(5)
+        m1, m2, m3, m4, m5 = st.container(key="kpi_all").columns(5)
         m1.metric("전체 누적 입식", f"{total_admission:,}두",
                   delta=f"{len(all_cattle_dfs)}개 농장 합계", delta_color="off", delta_arrow="off")
         m2.metric("현재 사육중", f"{current_breeding:,}두",
@@ -1862,7 +1984,7 @@ if selected_farm == "시험농장 전체 현황":
         st.write("")
 
         count_col = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="center")
-        money_col = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right")
+        money_col = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right", step=1)
 
         st.markdown("##### 🏢 농장별 요약 현황")
         farm_summary = df_all.groupby('농장명').agg(
@@ -1878,7 +2000,7 @@ if selected_farm == "시험농장 전체 현황":
             farm_summary.columns.get_loc('폐사') + 1, '폐사율',
             (farm_summary['폐사'] / farm_summary['전체입식'].where(farm_summary['전체입식'] > 0) * 100).fillna(0),
         )
-        st.dataframe(
+        farm_dataframe(
             farm_summary,
             width="stretch", hide_index=True,
             column_config={
@@ -1902,7 +2024,7 @@ if selected_farm == "시험농장 전체 현황":
                 총구입비용_만원=('초기원가', lambda x: int(x.sum(skipna=True)) // 10000),
                 평균구입비용_만원=('초기원가', lambda x: int(x.mean(skipna=True)) // 10000 if not x.isna().all() else 0)
             ).reset_index()
-            st.dataframe(
+            farm_dataframe(
                 market_summary,
                 width="stretch", hide_index=True,
                 column_config={
@@ -1922,7 +2044,7 @@ if selected_farm == "시험농장 전체 현황":
             for col in ['입식일', '거세일', '종결일']:
                 df_detail[col] = pd.to_datetime(df_detail[col], errors='coerce')
             df_detail['상태'] = df_detail['상태'].map({'사육': '🟢 사육', '출하': '🔵 출하', '폐사': '🔴 폐사'}).fillna(df_detail['상태'])
-            st.dataframe(
+            farm_dataframe(
                 df_detail,
                 width="stretch",
                 hide_index=True,
@@ -2116,11 +2238,11 @@ if USE_PG and st.sidebar.button(
 # 타이틀 (선택된 농장 표시)
 st.markdown(
     f"""
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:0.4rem;">
-        <div style="display:flex; align-items:center; gap:14px;">
-            <img src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 44px;">
-            <div>
-                <h1 style="margin:0; padding:0; font-size:1.9rem;">대구축협 시험농장 관리 시스템</h1>
+    <div class="farm-header" style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:0.4rem;">
+        <div style="display:flex; align-items:center; gap:14px; min-width:0;">
+            <img class="farm-title-logo" src="{MEDAL_ICON_DATA_URI}" alt="심볼" style="height: 44px;">
+            <div style="min-width:0;">
+                <h1 class="farm-title" style="margin:0; padding:0;"><span class="title-long">대구축협 시험농장 관리 시스템</span><span class="title-short">시험농장 관리</span></h1>
                 <div style="color:#5F6F66; font-size:0.95rem; margin-top:2px;">
                     개체 입식 · 사육 현황 · 품목 매입 · 월말 원가 정산(사육일수 비례 배분)
                 </div>
@@ -2190,7 +2312,7 @@ if not active_cattle_dates.empty:
 def _rate(part):
     return f"{part / total_admitted * 100:.1f}%" if total_admitted else "0.0%"
 
-kpi_cols = st.columns(6)
+kpi_cols = st.container(key="kpi_main").columns(6)
 kpi_cols[0].metric("현재 사육 두수", f"{current_raising:,}두",
                    delta=f"전체 입식 {total_admitted:,}두", delta_color="off", delta_arrow="off")
 kpi_cols[1].metric("누적 출하", f"{shipped_count:,}두",
@@ -2216,7 +2338,7 @@ with tab_cattle:
         col_reg1, col_reg2 = st.columns(2)
         
         with col_reg1:
-            st.subheader("시험군 등록")
+            st.subheader("🧪 시험군 등록")
             with st.form("add_group_form", clear_on_submit=True):
                 new_group_name = st.text_input("시험군 명칭", placeholder="예: 대조군, 처리군A 등")
                 new_group_start = st.date_input("시작일")
@@ -2235,10 +2357,7 @@ with tab_cattle:
                 with col_c2_1: new_group_b2 = st.multiselect("대상 동 (조건 2)", options=buildings_list)
                 with col_c2_2: new_group_p2 = st.multiselect("대상 우방 (조건 2)", options=pens_list)
 
-                # 버튼 넓이를 절반으로 줄이기 위해 컬럼 사용
-                btn_g1, btn_g2 = st.columns(2)
-                with btn_g1:
-                    submitted_group = st.form_submit_button("시험군 등록", type="primary", width="stretch")
+                submitted_group = st.form_submit_button("시험군 등록", type="primary", width="stretch")
 
                 if submitted_group:
                     if new_group_name:
@@ -2258,10 +2377,8 @@ with tab_cattle:
                             st.error("이미 존재하는 시험군 명칭입니다.")
                     else:
                         st.warning("시험군 명칭을 입력하세요.")
-            st.caption("기존 개체를 이 시험군으로 배정하려면 '상태 변경 / 질병 기록' 탭의 '개체 위치 및 시험군 이동'을 이용하세요.")
+            st.caption("기존 개체를 시험군에 배정하거나 옮기려면 '상태 변경 / 질병 기록' 탭의 '개체 위치 및 시험군 이동'을 이용하세요.")
 
-            st.markdown("---")
-            st.markdown("##### 등록된 시험군")
             df_groups = pd.read_sql("SELECT test_group_code as 시험군코드, test_name as 시험명칭, start_date as 시작일, end_date as 종료일, location_mapping as 자동할당조건 FROM testgroup_master", conn)
             
             def format_loc(x):
@@ -2300,60 +2417,60 @@ with tab_cattle:
                     return " / ".join(res)
                 except: return ""
                 
-            if '자동할당조건' in df_groups.columns:
-                df_groups['자동할당조건'] = df_groups['자동할당조건'].apply(format_loc)
+            with st.expander(f"📋 등록된 시험군 ({len(df_groups)}개) · 수정 / 삭제"):
+                if '자동할당조건' in df_groups.columns:
+                    df_groups['자동할당조건'] = df_groups['자동할당조건'].apply(format_loc)
             
-            # 시험군코드는 UI 화면 테이블에서 숨김 처리
-            st.dataframe(df_groups[['시험명칭', '시작일', '종료일', '자동할당조건']], width="stretch", hide_index=True)
+                # 시험군코드는 UI 화면 테이블에서 숨김 처리
+                farm_dataframe(df_groups[['시험명칭', '시작일', '종료일', '자동할당조건']], width="stretch", hide_index=True)
             
-            if not df_groups.empty:
-                st.markdown("##### 📝 시험군 수정 / 삭제")
+                if not df_groups.empty:
+                    st.markdown("##### 시험군 수정 / 삭제")
                 
-                # 시험명칭만 깔끔하게 표시
-                group_opts = {r['시험명칭']: r['시험군코드'] for _, r in df_groups.iterrows()}
-                edit_target = st.selectbox("대상 시험군", list(group_opts.keys()), key="edit_group_sel")
+                    # 시험명칭만 깔끔하게 표시
+                    group_opts = {r['시험명칭']: r['시험군코드'] for _, r in df_groups.iterrows()}
+                    edit_target = st.selectbox("대상 시험군", list(group_opts.keys()), key="edit_group_sel")
                 
-                target_code = group_opts[edit_target]
-                current_row = df_groups[df_groups['시험군코드'] == target_code].iloc[0]
-                current_name = current_row['시험명칭']
-                current_start = pd.to_datetime(current_row['시작일']).date()
+                    target_code = group_opts[edit_target]
+                    current_row = df_groups[df_groups['시험군코드'] == target_code].iloc[0]
+                    current_name = current_row['시험명칭']
+                    current_start = pd.to_datetime(current_row['시작일']).date()
 
-                with st.form("edit_group_form", clear_on_submit=False):
-                    edit_name = st.text_input("새 시험명칭", value=current_name)
-                    edit_start = st.date_input("새 시작일", value=current_start)
+                    with st.form("edit_group_form", clear_on_submit=False):
+                        edit_name = st.text_input("새 시험명칭", value=current_name)
+                        edit_start = st.date_input("새 시작일", value=current_start)
 
-                    col_b1, col_b2 = st.columns(2)
-                    with col_b1:
-                        submitted_edit = st.form_submit_button("수정", type="primary", width="stretch")
-                    with col_b2:
-                        submitted_delete = st.form_submit_button("삭제", type="secondary", width="stretch")
+                        col_b1, col_b2 = st.columns(2)
+                        with col_b1:
+                            submitted_edit = st.form_submit_button("수정", type="primary", width="stretch")
+                        with col_b2:
+                            submitted_delete = st.form_submit_button("삭제", type="secondary", width="stretch")
 
-                    if submitted_edit:
-                        if edit_name:
+                        if submitted_edit:
+                            if edit_name:
+                                wc = db_connect(DB_FILE)
+                                wc.execute("UPDATE testgroup_master SET test_name = ?, start_date = ? WHERE test_group_code = ?", (edit_name, edit_start.isoformat(), target_code))
+                                wc.commit(); wc.close()
+                                notify("시험군 수정 완료", icon="✅")
+                                st.rerun()
+                            else:
+                                st.warning("새 시험명칭을 입력하세요.")
+
+                        if submitted_delete:
                             wc = db_connect(DB_FILE)
-                            wc.execute("UPDATE testgroup_master SET test_name = ?, start_date = ? WHERE test_group_code = ?", (edit_name, edit_start.isoformat(), target_code))
-                            wc.commit(); wc.close()
-                            notify("시험군 수정 완료", icon="✅")
-                            st.rerun()
-                        else:
-                            st.warning("새 시험명칭을 입력하세요.")
-
-                    if submitted_delete:
-                        wc = db_connect(DB_FILE)
-                        # 개체가 있는지 확인하여 무결성 오류 방지
-                        cattle_cnt = pd.read_sql("SELECT COUNT(*) as cnt FROM cattle WHERE test_group_code=?", wc, params=(target_code,)).iloc[0]['cnt']
-                        if cattle_cnt > 0:
-                            st.error(f"이 시험군에 등록된 개체가 {cattle_cnt}마리 있어 삭제할 수 없습니다. 개체를 먼저 삭제/이동하세요.")
-                            wc.close()
-                        else:
-                            wc.execute("DELETE FROM testgroup_master WHERE test_group_code = ?", (target_code,))
-                            wc.commit(); wc.close()
-                            notify(f"시험군 '{target_code}' 삭제 완료", icon="✅")
-                            st.rerun()
-                st.caption("기존 개체를 다른 시험군으로 옮기려면 '상태 변경 / 질병 기록' 탭의 '개체 위치 및 시험군 이동'을 이용하세요.")
+                            # 개체가 있는지 확인하여 무결성 오류 방지
+                            cattle_cnt = pd.read_sql("SELECT COUNT(*) as cnt FROM cattle WHERE test_group_code=?", wc, params=(target_code,)).iloc[0]['cnt']
+                            if cattle_cnt > 0:
+                                st.error(f"이 시험군에 등록된 개체가 {cattle_cnt}마리 있어 삭제할 수 없습니다. 개체를 먼저 삭제/이동하세요.")
+                                wc.close()
+                            else:
+                                wc.execute("DELETE FROM testgroup_master WHERE test_group_code = ?", (target_code,))
+                                wc.commit(); wc.close()
+                                notify(f"시험군 '{target_code}' 삭제 완료", icon="✅")
+                                st.rerun()
 
         with col_reg2:
-            st.subheader("개체 입식 등록")
+            st.subheader("🐮 개체 입식 등록")
             st.caption("개체를 한 마리씩 등록하거나, 엑셀 파일을 통해 일괄 등록할 수 있습니다.")
             
             groups_for_cattle = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master", conn)
@@ -2435,10 +2552,7 @@ with tab_cattle:
                                 key="bulk_fill_dates",
                             )
 
-                            # 버튼 넓이를 절반으로 줄이기 위해 컬럼 사용
-                            btn_b1, btn_b2 = st.columns(2)
-                            with btn_b1:
-                                do_bulk_upload = st.button("개체 일괄등록", type="primary", width="stretch")
+                            do_bulk_upload = st.button("개체 일괄등록", type="primary", width="stretch")
 
                             if do_bulk_upload:
                                 wc = db_connect(DB_FILE)
@@ -2627,24 +2741,23 @@ with tab_cattle:
                     with c6:
                         new_market = st.text_input("우시장", placeholder="예: 순정축협(정읍)")
                     
-                    c7, c8, c9 = st.columns(3)
+                    c7, c8 = st.columns(2)
                     with c7:
                         new_building = st.selectbox("동", [f"{i}동" for i in range(1, 7)])
                     with c8:
-                        new_pen = st.number_input("우방 (칸번호)", min_value=1, max_value=20, value=1)
+                        new_pen = st.number_input("칸번호", min_value=1, max_value=20, value=1, help="우방(칸) 번호")
+
+                    c9, c10 = st.columns(2)
                     with c9:
                         new_feed_type = st.selectbox("사료구분", ["표준", "증량형", "제한형"])
-                    
-                    c10, c11 = st.columns(2)
                     with c10:
                         new_roughage = st.selectbox("조사료등급", ["표준", "고급", "저급"])
-                    with c11:
-                        new_castration = st.date_input("거세일")
+
+                    new_castration = st.date_input("거세일")
                     
                     st.markdown("**입식 비용 내역**")
-                    cc1, cc2, cc3 = st.columns(3)
-                    with cc1:
-                        new_calf_price = st.number_input("송아지 구입금액 (원)", min_value=0, step=100000, value=5000000)
+                    new_calf_price = st.number_input("송아지 구입금액 (원)", min_value=0, step=100000, value=5000000)
+                    cc2, cc3 = st.columns(2)
                     with cc2:
                         new_commission = st.number_input("수수료 (원)", min_value=0, step=10000, value=30000)
                     with cc3:
@@ -2657,11 +2770,8 @@ with tab_cattle:
                     with ci2:
                         new_ins_premium = st.number_input("보험료 (원)", min_value=0, step=1000, value=0)
                     
-                    # 버튼 넓이를 절반으로 줄이기 위해 컬럼 사용
-                    btn_c1, btn_c2 = st.columns(2)
-                    with btn_c1:
-                        submitted_cattle = st.form_submit_button("개체 입식 등록", type="primary", width="stretch")
-                        
+                    submitted_cattle = st.form_submit_button("개체 입식 등록", type="primary", width="stretch")
+
                     if submitted_cattle:
                         if new_cattle_id:
                             total_init_cost = new_calf_price + new_commission + new_transport
@@ -2686,7 +2796,7 @@ with tab_cattle:
         col_st, col_dis = st.columns(2)
         
         with col_st:
-            st.subheader("상태 변경 (출하 / 폐사)")
+            st.subheader("🔄 상태 변경 (출하 / 폐사)")
             active_cattle = pd.read_sql("""
                 SELECT c.cattle_id, c.test_group_code, t.test_name, c.building, c.pen_number 
                 FROM cattle c 
@@ -2716,9 +2826,7 @@ with tab_cattle:
                         new_status = st.selectbox("변경할 상태", ["출하", "폐사"])
                         closure_date = st.date_input("출하/폐사 일자")
                         
-                        btn_s1, btn_s2 = st.columns(2)
-                        with btn_s1:
-                            submitted_status = st.form_submit_button("상태 변경", type="primary", width="stretch")
+                        submitted_status = st.form_submit_button("상태 변경", type="primary", width="stretch")
                             
                         if submitted_status:
                             target_id = cattle_opts[target_cattle_label]
@@ -2729,7 +2837,7 @@ with tab_cattle:
                             st.rerun()
                     
                     st.markdown("---")
-                    st.subheader("개체 위치(동/우방) 및 시험군 이동")
+                    st.subheader("📍 개체 위치(동/우방) 및 시험군 이동")
                     st.caption("우방을 변경하면 해당 우방에 있는 개체들과 같은 시험군으로 자동 소속됩니다. 새로 만든 시험군에 기존 개체를 편입할 때도 여기서 이동하세요.")
                     
                     groups_for_move = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master", conn)
@@ -2746,9 +2854,7 @@ with tab_cattle:
                             
                         manual_group = st.selectbox("수동 시험군 지정 (자동 할당을 원치 않을 경우)", ["(자동으로 찾기)"] + list(move_group_opts.keys()))
                         
-                        btn_m1, btn_m2 = st.columns(2)
-                        with btn_m1:
-                            submitted_move = st.form_submit_button("위치 및 소속 변경", type="primary", width="stretch")
+                        submitted_move = st.form_submit_button("위치 및 소속 변경", type="primary", width="stretch")
                             
                         if submitted_move:
                             if not move_cattle_labels:
@@ -2828,7 +2934,7 @@ with tab_cattle:
             else:
                 for col in ['발병일', '완치일']:
                     df_disease[col] = pd.to_datetime(df_disease[col], errors='coerce')
-                st.dataframe(
+                farm_dataframe(
                     df_disease, width="stretch", hide_index=True,
                     column_config={
                         "ID": st.column_config.NumberColumn(width="small"),
@@ -2840,7 +2946,7 @@ with tab_cattle:
     
     with sub_tab3:
 
-        st.subheader("전체 개체 현황 (개체관리대장)")
+        st.subheader("📋 전체 개체 현황 (개체관리대장)")
         
         df_all_cattle = pd.read_sql("""
             SELECT c.cattle_id as 이표번호, c.kpn as KPN,
@@ -2899,7 +3005,7 @@ with tab_cattle:
         ]
         df_all_cattle = df_all_cattle[cols_order]
 
-        col_f1, col_f2, col_f3, col_f4 = st.columns([1, 1, 1, 1.5])
+        col_f1, col_f2, col_f3, col_f4 = st.container(key="grid2_cattle_filters").columns([1, 1, 1, 1.5])
         with col_f1:
             unique_groups = [g for g in df_all_cattle['시험군'].unique() if pd.notna(g)]
             filter_group = st.selectbox("📌 시험군 필터", ["(전체 보기)", "(미배정)"] + unique_groups)
@@ -2955,10 +3061,10 @@ with tab_cattle:
         disabled_cols = [c for c in df_all_cattle.columns if c != "선택"]
         date_cfg = {c: st.column_config.DateColumn(c, format="YYYY-MM-DD") for c in ['생년월일', '입식일', '거세일', '종결일']}
         money_cfg = {
-            c: st.column_config.NumberColumn(f"{c} (원)", format="localized", alignment="right")
+            c: st.column_config.NumberColumn(f"{c} (원)", format="localized", alignment="right", step=1)
             for c in money_cols
         }
-        edited_all_cattle_df = st.data_editor(
+        edited_all_cattle_df = farm_data_editor(
             df_all_cattle,
             width="stretch",
             hide_index=True,
@@ -2970,8 +3076,9 @@ with tab_cattle:
                                                        help="체크한 개체를 아래에서 다른 우방으로 이동할 수 있습니다."),
                 "이표번호": st.column_config.TextColumn("이표번호", pinned=True),
                 "상태": st.column_config.TextColumn("상태", width="small"),
-                "우방": st.column_config.NumberColumn("우방", format="%d", alignment="center"),
-                "동": st.column_config.TextColumn("동", alignment="center"),
+                "우방": st.column_config.NumberColumn("우방", format="%d", alignment="center", width="small"),
+                "동": st.column_config.TextColumn("동", alignment="center", width="small"),
+                "KPN": st.column_config.TextColumn("KPN", width="small"),
                 **date_cfg,
                 **money_cfg,
             },
@@ -3026,7 +3133,7 @@ with tab_cattle:
 with tab1:
     col_a, col_b = st.columns(2)
     with col_a:
-        st.subheader("사육 개체 요약")
+        st.subheader("🐄 사육 개체 요약")
         st.caption("&nbsp;", unsafe_allow_html=True)  # 오른쪽 캡션과 높이를 맞추기 위한 빈 여백
         df_cattle = pd.read_sql("""
             SELECT c.cattle_id as 개체번호, t.test_name as 시험군, c.status as 상태, c.initial_cost as 초기원가
@@ -3035,20 +3142,23 @@ with tab1:
             ORDER BY c.status, c.cattle_id
         """, conn)
         df_cattle['상태'] = df_cattle['상태'].map({'사육': '🟢 사육', '출하': '🔵 출하', '폐사': '🔴 폐사'}).fillna(df_cattle['상태'])
-        st.dataframe(
+        farm_dataframe(
             df_cattle, width="stretch", hide_index=True,
             column_config={
                 "상태": st.column_config.TextColumn(width="small"),
-                "초기원가": st.column_config.NumberColumn("초기원가 (원)", format="localized", alignment="right"),
+                "초기원가": st.column_config.NumberColumn("초기원가 (원)", format="localized", alignment="right", step=1),
             },
         )
     with col_b:
-        st.subheader("품목 및 재고 상태")
+        st.subheader("📦 품목 및 재고 상태")
         st.caption("매입 시마다 이동평균단가가 자동으로 갱신됩니다.")
         df_item = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, unit as 단위, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
-        st.dataframe(
+        farm_dataframe(
             df_item, width="stretch", hide_index=True,
             column_config={
+                "품목코드": st.column_config.TextColumn("코드", width="small"),
+                "분류": st.column_config.TextColumn(width="small"),
+                "단위": st.column_config.TextColumn(width="small"),
                 "현재재고": st.column_config.NumberColumn(format="localized", alignment="right"),
                 "이동평균단가": st.column_config.NumberColumn("이동평균단가 (원)", format="localized", alignment="right"),
             },
@@ -3114,61 +3224,62 @@ with tab0:
         if "_dup_item_alert" in st.session_state:
             duplicate_item_dialog(*st.session_state.pop("_dup_item_alert"))
 
-        st.markdown("---")
-        st.markdown("##### 등록된 품목 목록 (체크박스로 삭제 가능)")
-        df_items_all = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, unit as 단위, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
-        df_items_all.insert(0, "삭제", False)
+        with st.expander("📋 등록된 품목 목록 · 수정 / 삭제 (체크박스로 삭제)"):
+            df_items_all = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, unit as 단위, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
+            df_items_all.insert(0, "삭제", False)
 
-        edited_item_df = st.data_editor(
-            df_items_all,
-            width="stretch",
-            hide_index=True,
-            disabled=["품목코드", "현재재고", "이동평균단가"],
-            column_config={
-                "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
-                "단위": st.column_config.SelectboxColumn("단위", options=["kg", "ml", "개"]),
-                "현재재고": st.column_config.NumberColumn(format="localized", alignment="right"),
-                "이동평균단가": st.column_config.NumberColumn("이동평균단가 (원)", format="localized", alignment="right"),
-            },
-            num_rows="fixed",  # 품목 추가는 위 등록 폼으로만, 삭제는 '삭제' 체크박스로
-            key="item_master_editor"
-        )
+            edited_item_df = farm_data_editor(
+                df_items_all,
+                width="stretch",
+                hide_index=True,
+                disabled=["품목코드", "현재재고", "이동평균단가"],
+                column_config={
+                    "삭제": st.column_config.CheckboxColumn("삭제", width=50),
+                    "품목코드": st.column_config.TextColumn("코드", width="small"),
+                    "분류": st.column_config.SelectboxColumn("분류", options=["사료", "조사료", "약품", "기타저장품"], width="small"),
+                    "단위": st.column_config.SelectboxColumn("단위", options=["kg", "ml", "개"], width="small"),
+                    "현재재고": st.column_config.NumberColumn(format="localized", alignment="right", width="small"),
+                    "이동평균단가": st.column_config.NumberColumn("평균단가 (원)", format="localized", alignment="right", width="small"),
+                },
+                num_rows="fixed",  # 품목 추가는 위 등록 폼으로만, 삭제는 '삭제' 체크박스로
+                key="item_master_editor"
+            )
 
-        # 표에서 이름을 고쳐 다른 품목과 같아지는 경우도 막는다 (삭제 체크한 줄은 제외).
-        kept_items = edited_item_df[~edited_item_df["삭제"].fillna(False).astype(bool) & edited_item_df["품목명"].notna()]
-        kept_norm = kept_items["품목명"].map(normalize_item_name)
-        dup_items = kept_items[kept_norm.duplicated(keep=False) & kept_norm.ne("")]
+            # 표에서 이름을 고쳐 다른 품목과 같아지는 경우도 막는다 (삭제 체크한 줄은 제외).
+            kept_items = edited_item_df[~edited_item_df["삭제"].fillna(False).astype(bool) & edited_item_df["품목명"].notna()]
+            kept_norm = kept_items["품목명"].map(normalize_item_name)
+            dup_items = kept_items[kept_norm.duplicated(keep=False) & kept_norm.ne("")]
 
-        if st.button("품목 수정 사항 저장", type="primary", width="stretch"):
-            if not dup_items.empty:
-                duplicate_item_dialog(
-                    "같은 이름의 품목이 두 개 이상 있어 저장하지 않았습니다: "
-                    + ", ".join(sorted(set(dup_items["품목명"].astype(str)))),
-                    dup_items[["품목코드", "품목명", "분류", "단위"]],
-                )
-            else:
-                item_changed, item_deleted, _ = editor_changes(
-                    df_items_all, edited_item_df, "품목코드", ["품목명", "분류", "단위"])
+            if st.button("품목 수정 사항 저장", type="primary", width="stretch"):
+                if not dup_items.empty:
+                    duplicate_item_dialog(
+                        "같은 이름의 품목이 두 개 이상 있어 저장하지 않았습니다: "
+                        + ", ".join(sorted(set(dup_items["품목명"].astype(str)))),
+                        dup_items[["품목코드", "품목명", "분류", "단위"]],
+                    )
+                else:
+                    item_changed, item_deleted, _ = editor_changes(
+                        df_items_all, edited_item_df, "품목코드", ["품목명", "분류", "단위"])
 
-                def _save_items():
-                    write_conn = db_connect(DB_FILE)
-                    for _, row in item_changed.iterrows():
-                        write_conn.execute("UPDATE item_master SET item_name=?, category=?, unit=? WHERE item_code=?",
-                                           (row['품목명'], row['분류'], row.get('단위'), row['품목코드']))
-                    blocked = []
-                    for code in item_deleted['품목코드']:
-                        try:
-                            write_conn.execute("DELETE FROM item_master WHERE item_code=?", (code,))
-                        except sqlite3.IntegrityError:
-                            blocked.append(code)
-                    write_conn.commit()
-                    write_conn.close()
-                    notify(f"품목 수정 {len(item_changed)}건, 삭제 {len(item_deleted) - len(blocked)}건 저장했습니다.", icon="✅")
-                    if blocked:
-                        notify(f"매입·사용 내역이 있어 삭제하지 못한 품목: {', '.join(blocked)}", icon="⚠️")
+                    def _save_items():
+                        write_conn = db_connect(DB_FILE)
+                        for _, row in item_changed.iterrows():
+                            write_conn.execute("UPDATE item_master SET item_name=?, category=?, unit=? WHERE item_code=?",
+                                               (row['품목명'], row['분류'], row.get('단위'), row['품목코드']))
+                        blocked = []
+                        for code in item_deleted['품목코드']:
+                            try:
+                                write_conn.execute("DELETE FROM item_master WHERE item_code=?", (code,))
+                            except sqlite3.IntegrityError:
+                                blocked.append(code)
+                        write_conn.commit()
+                        write_conn.close()
+                        notify(f"품목 수정 {len(item_changed)}건, 삭제 {len(item_deleted) - len(blocked)}건 저장했습니다.", icon="✅")
+                        if blocked:
+                            notify(f"매입·사용 내역이 있어 삭제하지 못한 품목: {', '.join(blocked)}", icon="⚠️")
 
-                save_with_delete_confirm("품목", item_changed, item_deleted, edited_item_df.iloc[0:0],
-                                         ["품목코드", "품목명", "분류", "단위", "현재재고"], None, _save_items)
+                    save_with_delete_confirm("품목", item_changed, item_deleted, edited_item_df.iloc[0:0],
+                                             ["품목코드", "품목명", "분류", "단위", "현재재고"], None, _save_items)
     
     with col_right:
         st.subheader("🚚 매입(입고) 등록")
@@ -3221,14 +3332,15 @@ with tab0:
                     "총매입금액": pd.Series([r["총매입금액"] for r in rows], dtype="float"),
                 })
                 st.session_state["_purchase_entry_opts"] = purchase_options
-            purchase_edited = st.data_editor(
+            purchase_edited = farm_data_editor(
                 st.session_state["_purchase_entry_base"],
+                placeholder="",
                 width="stretch",
                 hide_index=True,
                 num_rows="dynamic",
                 key=f"purchase_entry_editor_{purchase_ver}",
                 column_config={
-                    "품목": st.column_config.SelectboxColumn("품목 (남은 수량)", options=purchase_options, width="large"),
+                    "품목": st.column_config.SelectboxColumn("품목 (남은 수량)", options=purchase_options, width="medium"),
                     "수량": st.column_config.NumberColumn("매입수량", min_value=0, format="localized", alignment="right"),
                     "총매입금액": st.column_config.NumberColumn("총매입금액 (원)", min_value=0, format="localized", alignment="right"),
                 },
@@ -3270,8 +3382,8 @@ with tab0:
                 })
 
             if preview:
-                money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right")
-                st.dataframe(
+                money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right", step=1)
+                farm_dataframe(
                     pd.DataFrame(preview), width="stretch", hide_index=True,
                     column_config={
                         "현재 남은 수량": st.column_config.NumberColumn(format="localized", alignment="right"),
@@ -3309,7 +3421,8 @@ with tab0:
             # ----- 품목 현황 -----
             # 고른 매입일자가 속한 달의 매입 품목은 바로 보이게 두고,
             # 월말정산 후 남은 품목과 전체 매입 품목은 접어 두었다가 펼쳐서 본다.
-            num = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right")
+            num = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right",
+                                                          step=1 if "(원)" in label else None)
             purchase_month = purchase_date.strftime("%Y-%m")
             month_df = pd.read_sql("""
                 SELECT i.item_name AS 품목명, i.category AS 분류, COUNT(*) AS 매입건수,
@@ -3325,7 +3438,7 @@ with tab0:
                 st.caption(f"{purchase_month}에 매입한 품목이 없습니다. (위 매입일자를 바꾸면 그 달의 매입 품목을 보여 줍니다)")
             else:
                 month_df["평균단가"] = (month_df["매입금액"] / month_df["매입수량"].where(month_df["매입수량"] != 0)).round(0)
-                st.dataframe(
+                farm_dataframe(
                     month_df[["품목명", "분류", "매입건수", "매입수량", "단위", "평균단가", "매입금액"]],
                     width="stretch", hide_index=True,
                     column_config={
@@ -3357,7 +3470,7 @@ with tab0:
                     st.caption("남은 품목이 없습니다.")
                 else:
                     remain_df["평균단가"] = (remain_df["남은금액"] / remain_df["남은수량"]).round(0)
-                    st.dataframe(
+                    farm_dataframe(
                         remain_df[["품목명", "분류", "남은수량", "단위", "평균단가", "남은금액"]],
                         width="stretch", hide_index=True,
                         column_config={"남은수량": num("남은 수량"), "평균단가": num("평균단가 (원)"), "남은금액": num("남은 금액 (원)")},
@@ -3369,7 +3482,7 @@ with tab0:
                 if all_df.empty:
                     st.caption("매입한 품목이 없습니다.")
                 else:
-                    st.dataframe(
+                    farm_dataframe(
                         all_df[["품목명", "분류", "단위", "누적매입수량", "누적매입금액", "누적사용량", "남은수량"]],
                         width="stretch", hide_index=True,
                         column_config={
@@ -3379,86 +3492,89 @@ with tab0:
                     )
                     show_table_total(len(all_df), "누적 매입금액", float(all_df["누적매입금액"].sum()))
 
-        st.markdown("---")
-        st.markdown("##### 매입 내역 (체크박스로 삭제 가능)")
-        df_purchase = pd.read_sql("""
-            SELECT p.purchase_id as 매입ID, p.purchase_date as 매입일자, 
-                   p.item_code as 품목코드, i.item_name as 품목명,
-                   p.quantity as 수량, p.unit as 단위, p.total_amount as 총금액,
-                   ROUND(p.total_amount / NULLIF(p.quantity, 0), 0) as 단가
-            FROM purchase p
-            JOIN item_master i ON p.item_code = i.item_code
-            ORDER BY p.purchase_date DESC
-        """, conn)
-        df_purchase.insert(0, "삭제", False)
+    st.markdown("---")
+    st.markdown("##### 매입 내역 (체크박스로 삭제 가능)")
+    df_purchase = pd.read_sql("""
+        SELECT p.purchase_id as 매입ID, p.purchase_date as 매입일자, 
+               p.item_code as 품목코드, i.item_name as 품목명,
+               p.quantity as 수량, p.unit as 단위, p.total_amount as 총금액,
+               ROUND(p.total_amount / NULLIF(p.quantity, 0), 0) as 단가
+        FROM purchase p
+        JOIN item_master i ON p.item_code = i.item_code
+        ORDER BY p.purchase_date DESC
+    """, conn)
+    df_purchase.insert(0, "삭제", False)
         
-        if "purchase_editor" in st.session_state:
-            edits = st.session_state["purchase_editor"].get("edited_rows", {})
-            for row_idx, changes in edits.items():
-                row_idx = int(row_idx)
-                if row_idx < len(df_purchase):
-                    new_amount = changes.get("총금액", df_purchase.at[row_idx, "총금액"])
-                    new_qty = changes.get("수량", df_purchase.at[row_idx, "수량"])
-                    if pd.notna(new_qty) and float(new_qty) != 0:
-                        df_purchase.at[row_idx, "단가"] = round(float(new_amount) / float(new_qty))
+    if "purchase_editor" in st.session_state:
+        edits = st.session_state["purchase_editor"].get("edited_rows", {})
+        for row_idx, changes in edits.items():
+            row_idx = int(row_idx)
+            if row_idx < len(df_purchase):
+                new_amount = changes.get("총금액", df_purchase.at[row_idx, "총금액"])
+                new_qty = changes.get("수량", df_purchase.at[row_idx, "수량"])
+                if pd.notna(new_qty) and float(new_qty) != 0:
+                    df_purchase.at[row_idx, "단가"] = round(float(new_amount) / float(new_qty))
             
-            added = st.session_state["purchase_editor"].get("added_rows", [])
-            for row in added:
-                amt = row.get("총금액", 0)
-                qty = row.get("수량", 0)
-                if qty and float(qty) != 0:
-                    row["단가"] = round(float(amt) / float(qty))
+        added = st.session_state["purchase_editor"].get("added_rows", [])
+        for row in added:
+            amt = row.get("총금액", 0)
+            qty = row.get("수량", 0)
+            if qty and float(qty) != 0:
+                row["단가"] = round(float(amt) / float(qty))
         
-        edited_purchase_df = st.data_editor(
-            df_purchase,
-            width="stretch",
-            hide_index=True,
-            disabled=["매입ID", "품목명", "단가"],
-            num_rows="add",  # 줄 추가만 허용. 삭제는 '삭제' 체크박스로만 (줄을 빼서 지우는 일이 없게)
-            key="purchase_editor",
-            column_config={
-                "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
-                "매입ID": st.column_config.NumberColumn(width="small"),
-                "수량": st.column_config.NumberColumn(format="localized", alignment="right"),
-                "총금액": st.column_config.NumberColumn("총금액 (원)", format="localized", alignment="right"),
-                "단가": st.column_config.NumberColumn("단가 (원)", format="localized", alignment="right"),
-            },
-        )
+    edited_purchase_df = farm_data_editor(
+        df_purchase,
+        width="stretch",
+        hide_index=True,
+        disabled=["매입ID", "품목명", "단가"],
+        num_rows="add",  # 줄 추가만 허용. 삭제는 '삭제' 체크박스로만 (줄을 빼서 지우는 일이 없게)
+        key="purchase_editor",
+        column_config={
+            "삭제": st.column_config.CheckboxColumn("삭제", width=50),
+            "매입ID": None,  # 저장에 쓰이지만 화면에서는 숨김
+            "매입일자": st.column_config.TextColumn("매입일자", width="small"),
+            "품목코드": st.column_config.TextColumn("코드", width="small"),
+            "단위": st.column_config.TextColumn("단위", width="small"),
+            "수량": st.column_config.NumberColumn(format="localized", alignment="right"),
+            "총금액": st.column_config.NumberColumn("총금액 (원)", format="localized", alignment="right", step=1),
+            "단가": st.column_config.NumberColumn("단가 (원)", format="localized", alignment="right", step=1, width="small"),
+        },
+    )
         
-        if st.button("매입 수정 사항 저장", type="primary", width="stretch"):
-            pur_changed, pur_deleted, pur_added = editor_changes(
-                df_purchase, edited_purchase_df, "매입ID", ["매입일자", "품목코드", "수량", "단위", "총금액"])
-            pur_added = pur_added[pur_added['매입일자'].notna() & pur_added['품목코드'].notna()]
+    if st.button("매입 수정 사항 저장", type="primary", width="stretch"):
+        pur_changed, pur_deleted, pur_added = editor_changes(
+            df_purchase, edited_purchase_df, "매입ID", ["매입일자", "품목코드", "수량", "단위", "총금액"])
+        pur_added = pur_added[pur_added['매입일자'].notna() & pur_added['품목코드'].notna()]
 
-            def _save_purchases():
-                write_conn = db_connect(DB_FILE)
-                for _, row in pur_changed.iterrows():
-                    write_conn.execute("UPDATE purchase SET purchase_date=?, item_code=?, quantity=?, unit=?, total_amount=? WHERE purchase_id=?",
-                                       (row['매입일자'], row['품목코드'], row['수량'], row.get('단위', ''), row['총금액'], row['매입ID']))
-                for _, row in pur_added.iterrows():
-                    write_conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount) VALUES (?, ?, ?, ?, ?)",
-                                       (row['매입일자'], row['품목코드'], row['수량'], row.get('단위', ''), row['총금액']))
-                for mid in pur_deleted['매입ID']:
-                    write_conn.execute("DELETE FROM purchase WHERE purchase_id=?", (mid,))
+        def _save_purchases():
+            write_conn = db_connect(DB_FILE)
+            for _, row in pur_changed.iterrows():
+                write_conn.execute("UPDATE purchase SET purchase_date=?, item_code=?, quantity=?, unit=?, total_amount=? WHERE purchase_id=?",
+                                   (row['매입일자'], row['품목코드'], row['수량'], row.get('단위', ''), row['총금액'], row['매입ID']))
+            for _, row in pur_added.iterrows():
+                write_conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount) VALUES (?, ?, ?, ?, ?)",
+                                   (row['매입일자'], row['품목코드'], row['수량'], row.get('단위', ''), row['총금액']))
+            for mid in pur_deleted['매입ID']:
+                write_conn.execute("DELETE FROM purchase WHERE purchase_id=?", (mid,))
 
-                # 전체 품목 재고 및 단가 재계산
-                items = pd.read_sql("SELECT item_code FROM item_master", write_conn)
-                for item in items['item_code']:
-                    purchases = pd.read_sql("SELECT quantity, total_amount FROM purchase WHERE item_code=? ORDER BY purchase_date ASC", write_conn, params=(item,))
-                    stock = float(purchases['quantity'].sum()) if not purchases.empty else 0.0
-                    total_val = float(purchases['total_amount'].sum()) if not purchases.empty else 0.0
-                    avg_price = round(total_val / stock, 2) if stock > 0 else 0
-                    write_conn.execute("UPDATE item_master SET current_stock=?, moving_avg_price=? WHERE item_code=?", (stock, avg_price, item))
+            # 전체 품목 재고 및 단가 재계산
+            items = pd.read_sql("SELECT item_code FROM item_master", write_conn)
+            for item in items['item_code']:
+                purchases = pd.read_sql("SELECT quantity, total_amount FROM purchase WHERE item_code=? ORDER BY purchase_date ASC", write_conn, params=(item,))
+                stock = float(purchases['quantity'].sum()) if not purchases.empty else 0.0
+                total_val = float(purchases['total_amount'].sum()) if not purchases.empty else 0.0
+                avg_price = round(total_val / stock, 2) if stock > 0 else 0
+                write_conn.execute("UPDATE item_master SET current_stock=?, moving_avg_price=? WHERE item_code=?", (stock, avg_price, item))
 
-                write_conn.commit()
-                write_conn.close()
-                notify(f"매입 수정 {len(pur_changed)}건, 추가 {len(pur_added)}건, 삭제 {len(pur_deleted)}건 저장 · 재고 재계산 완료", icon="✅")
+            write_conn.commit()
+            write_conn.close()
+            notify(f"매입 수정 {len(pur_changed)}건, 추가 {len(pur_added)}건, 삭제 {len(pur_deleted)}건 저장 · 재고 재계산 완료", icon="✅")
 
-            save_with_delete_confirm("매입", pur_changed, pur_deleted, pur_added,
-                                     ["매입ID", "매입일자", "품목명", "수량", "단위", "총금액"], "총금액", _save_purchases)
+        save_with_delete_confirm("매입", pur_changed, pur_deleted, pur_added,
+                                 ["매입ID", "매입일자", "품목명", "수량", "단위", "총금액"], "총금액", _save_purchases)
 
 with tab2:
-    st.subheader("월말 비용 등록 및 조회")
+    st.subheader("💰 월말 비용 등록 및 조회")
     st.markdown("월말에 재고 조사 후, 시험군별 품목 사용량과 농장 고정비를 등록합니다.")
 
     # 정산연월은 사용량·고정비 등록이 함께 쓴다. 바꾸면 두 등록 내역의 조회 연월과 정산 대상 연월도 같은 달로 맞춘다.
@@ -3526,7 +3642,7 @@ with tab2:
                     "시험군": "합계", "현재 사육두수": int(ratio_view["현재 사육두수"].sum()),
                     "사육일수 (두수×일수)": total_days, "비율": 1.0 if total_days > 0 else 0.0,
                 }
-                st.dataframe(
+                farm_dataframe(
                     ratio_view,
                     width="stretch", hide_index=True,
                     column_config={
@@ -3562,17 +3678,18 @@ with tab2:
                     label = f"{r['item_name']} ({r['item_code']}) · 남은 {float(r['remaining']):,.1f} {unit}".rstrip()
                 usage_name_to_code[label] = r['item_code']
             usage_ver = st.session_state.setdefault("_usage_entry_ver", 0)
-            usage_edited = st.data_editor(
+            usage_edited = farm_data_editor(
                 pd.DataFrame({
                     "품목": pd.Series([None] * 8, dtype="object"),
                     "사용량": pd.Series([None] * 8, dtype="float"),
                 }),
+                placeholder="",
                 width="stretch",
                 hide_index=True,
                 num_rows="dynamic",
                 key=f"usage_entry_editor_{usage_ver}",
                 column_config={
-                    "품목": st.column_config.SelectboxColumn("품목 (남은 수량)", options=list(usage_name_to_code.keys()), width="large"),
+                    "품목": st.column_config.SelectboxColumn("품목 (남은 수량)", options=list(usage_name_to_code.keys()), width="medium"),
                     "사용량": st.column_config.NumberColumn("사용량", min_value=0, format="localized", alignment="right"),
                 },
             )
@@ -3612,8 +3729,8 @@ with tab2:
                 })
 
             if preview:
-                money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right")
-                st.dataframe(
+                money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right", step=1)
+                farm_dataframe(
                     pd.DataFrame(preview), width="stretch", hide_index=True,
                     column_config={
                         "현재 남은 수량": st.column_config.NumberColumn(format="localized", alignment="right"),
@@ -3648,7 +3765,7 @@ with tab2:
             if len(ratio_items) > 1 and usage_split_rows:
                 item_name_of = dict(zip(items_df2['item_code'], items_df2['item_name']))
                 st.markdown("###### 시험군별 배분 결과")
-                st.dataframe(
+                farm_dataframe(
                     pd.DataFrame([{"시험군": group_name_of.get(g, g), "품목": item_name_of.get(c, c),
                                    "배분 사용량": q, "적용단가": p, "산출액": a} for g, c, q, p, a in usage_split_rows]),
                     width="stretch", hide_index=True,
@@ -3689,83 +3806,84 @@ with tab2:
                            f"산출액 합계 {sum(r[4] for r in usage_split_rows):,.0f}원", icon="✅")
                     st.rerun()
         
-        st.markdown("---")
-        st.markdown("##### 등록된 사용 내역")
-        usage_view_month = month_view_select(conn, "monthly_usage", "usage_view_month",
-                                             st.session_state.get("cost_month_input") or datetime.now().strftime('%Y-%m'))
-        df_usage = pd.read_sql("""
-            SELECT u.usage_id as ID, u.settlement_month as 정산연월,
-                   t.test_name as 시험군, i.item_name as 품목명,
-                   u.total_usage as 사용량, u.applied_price as 적용단가,
-                   u.calculated_amount as 산출총액
-            FROM monthly_usage u
-            JOIN testgroup_master t ON u.test_group_code = t.test_group_code
-            JOIN item_master i ON u.item_code = i.item_code
-            WHERE u.settlement_month = ?
-            ORDER BY t.test_name
-        """, conn, params=(usage_view_month,))
-        df_usage.insert(0, "삭제", False)
+    st.markdown("---")
+    st.markdown("##### 등록된 사용 내역")
+    usage_view_month = month_view_select(conn, "monthly_usage", "usage_view_month",
+                                         st.session_state.get("cost_month_input") or datetime.now().strftime('%Y-%m'))
+    df_usage = pd.read_sql("""
+        SELECT u.usage_id as ID, u.settlement_month as 정산연월,
+               t.test_name as 시험군, i.item_name as 품목명,
+               u.total_usage as 사용량, u.applied_price as 적용단가,
+               u.calculated_amount as 산출총액
+        FROM monthly_usage u
+        JOIN testgroup_master t ON u.test_group_code = t.test_group_code
+        JOIN item_master i ON u.item_code = i.item_code
+        WHERE u.settlement_month = ?
+        ORDER BY t.test_name
+    """, conn, params=(usage_view_month,))
+    df_usage.insert(0, "삭제", False)
 
-        # 편집표 키에 연월을 넣어, 달을 바꾸면 이전 달에서 하던 편집이 새 달의 같은 줄에 붙지 않게 한다.
-        usage_editor_key = f"usage_editor_{usage_view_month}"
-        if usage_editor_key in st.session_state:
-            edits = st.session_state[usage_editor_key].get("edited_rows", {})
-            for row_idx, changes in edits.items():
-                row_idx = int(row_idx)
-                if row_idx < len(df_usage):
-                    new_qty = changes.get("사용량", df_usage.at[row_idx, "사용량"])
-                    new_price = changes.get("적용단가", df_usage.at[row_idx, "적용단가"])
-                    if pd.notna(new_qty) and pd.notna(new_price):
-                        df_usage.at[row_idx, "산출총액"] = round(float(new_qty) * float(new_price))
+    # 편집표 키에 연월을 넣어, 달을 바꾸면 이전 달에서 하던 편집이 새 달의 같은 줄에 붙지 않게 한다.
+    usage_editor_key = f"usage_editor_{usage_view_month}"
+    if usage_editor_key in st.session_state:
+        edits = st.session_state[usage_editor_key].get("edited_rows", {})
+        for row_idx, changes in edits.items():
+            row_idx = int(row_idx)
+            if row_idx < len(df_usage):
+                new_qty = changes.get("사용량", df_usage.at[row_idx, "사용량"])
+                new_price = changes.get("적용단가", df_usage.at[row_idx, "적용단가"])
+                if pd.notna(new_qty) and pd.notna(new_price):
+                    df_usage.at[row_idx, "산출총액"] = round(float(new_qty) * float(new_price))
             
-            added = st.session_state[usage_editor_key].get("added_rows", [])
-            for row in added:
-                qty = row.get("사용량", 0)
-                price = row.get("적용단가", 0)
-                row["산출총액"] = round(float(qty) * float(price))
+        added = st.session_state[usage_editor_key].get("added_rows", [])
+        for row in added:
+            qty = row.get("사용량", 0)
+            price = row.get("적용단가", 0)
+            row["산출총액"] = round(float(qty) * float(price))
 
-        edited_usage_df = st.data_editor(
-            df_usage,
-            width="stretch",
-            hide_index=True,
-            disabled=["ID", "시험군", "품목명", "산출총액"],
-            num_rows="fixed",  # 행 추가는 위 등록 폼으로만, 삭제는 '삭제' 체크박스로
-            key=usage_editor_key,
-            column_config={
-                "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
-                "ID": st.column_config.NumberColumn(width="small"),
-                "사용량": st.column_config.NumberColumn(format="localized", alignment="right"),
-                "적용단가": st.column_config.NumberColumn("적용단가 (원)", format="localized", alignment="right"),
-                "산출총액": st.column_config.NumberColumn("산출총액 (원)", format="localized", alignment="right"),
-            },
-        )
-        # 삭제 체크한 행은 빼고, 표에서 고친 값(새로 추가한 행 포함)을 그대로 반영해 합산
-        usage_kept = edited_usage_df[~edited_usage_df["삭제"].fillna(False).astype(bool)]
-        show_table_total(
-            len(usage_kept), "산출총액",
-            pd.to_numeric(usage_kept["산출총액"], errors="coerce").fillna(0).sum(),
-        )
+    edited_usage_df = farm_data_editor(
+        df_usage,
+        width="stretch",
+        hide_index=True,
+        disabled=["ID", "시험군", "품목명", "산출총액"],
+        num_rows="fixed",  # 행 추가는 위 등록 폼으로만, 삭제는 '삭제' 체크박스로
+        key=usage_editor_key,
+        column_config={
+            "삭제": st.column_config.CheckboxColumn("삭제", width=50),
+            "ID": None,
+            "정산연월": None,  # 위 '조회 연월'과 같은 값만 반복되므로 숨김
+            "사용량": st.column_config.NumberColumn(format="localized", alignment="right", width="small"),
+            "적용단가": st.column_config.NumberColumn("적용단가 (원)", format="localized", alignment="right"),
+            "산출총액": st.column_config.NumberColumn("산출총액 (원)", format="localized", alignment="right", step=1),
+        },
+    )
+    # 삭제 체크한 행은 빼고, 표에서 고친 값(새로 추가한 행 포함)을 그대로 반영해 합산
+    usage_kept = edited_usage_df[~edited_usage_df["삭제"].fillna(False).astype(bool)]
+    show_table_total(
+        len(usage_kept), "산출총액",
+        pd.to_numeric(usage_kept["산출총액"], errors="coerce").fillna(0).sum(),
+    )
 
-        if st.button("사용 내역 수정 사항 저장", type="primary", width="stretch"):
-            use_changed, use_deleted, _ = editor_changes(df_usage, edited_usage_df, "ID", ["정산연월", "사용량", "적용단가"])
+    if st.button("사용 내역 수정 사항 저장", type="primary", width="stretch"):
+        use_changed, use_deleted, _ = editor_changes(df_usage, edited_usage_df, "ID", ["정산연월", "사용량", "적용단가"])
 
-            def _save_usage():
-                write_conn = db_connect(DB_FILE)
-                for _, row in use_changed.iterrows():
-                    qty = float(row['사용량'])
-                    price = float(row['적용단가'])
-                    write_conn.execute(
-                        "UPDATE monthly_usage SET settlement_month=?, total_usage=?, applied_price=?, calculated_amount=? WHERE usage_id=?",
-                        (row['정산연월'], qty, price, round(qty * price, 2), row['ID'])
-                    )
-                for uid in use_deleted['ID']:
-                    write_conn.execute("DELETE FROM monthly_usage WHERE usage_id=?", (uid,))
-                write_conn.commit()
-                write_conn.close()
-                notify(f"사용 내역 수정 {len(use_changed)}건, 삭제 {len(use_deleted)}건 저장했습니다.", icon="✅")
+        def _save_usage():
+            write_conn = db_connect(DB_FILE)
+            for _, row in use_changed.iterrows():
+                qty = float(row['사용량'])
+                price = float(row['적용단가'])
+                write_conn.execute(
+                    "UPDATE monthly_usage SET settlement_month=?, total_usage=?, applied_price=?, calculated_amount=? WHERE usage_id=?",
+                    (row['정산연월'], qty, price, round(qty * price, 2), row['ID'])
+                )
+            for uid in use_deleted['ID']:
+                write_conn.execute("DELETE FROM monthly_usage WHERE usage_id=?", (uid,))
+            write_conn.commit()
+            write_conn.close()
+            notify(f"사용 내역 수정 {len(use_changed)}건, 삭제 {len(use_deleted)}건 저장했습니다.", icon="✅")
 
-            save_with_delete_confirm("사용 내역", use_changed, use_deleted, edited_usage_df.iloc[0:0],
-                                     ["ID", "정산연월", "시험군", "품목명", "사용량", "산출총액"], "산출총액", _save_usage)
+        save_with_delete_confirm("사용 내역", use_changed, use_deleted, edited_usage_df.iloc[0:0],
+                                 ["ID", "정산연월", "시험군", "품목명", "사용량", "산출총액"], "산출총액", _save_usage)
     
     with col_d:
         st.markdown("##### ⚡ 농장 고정비 등록")
@@ -3805,57 +3923,58 @@ with tab2:
                 notify(f"고정비 {len(fc_rows)}건 등록 완료! [{fc_month}] 합계 {sum(a for _, a in fc_rows):,.0f}원", icon="✅")
                 st.rerun()
         
-        st.markdown("---")
-        st.markdown("##### 등록된 고정비 내역 (체크박스로 삭제 가능)")
-        fc_view_month = month_view_select(conn, "monthly_fixedcost", "fc_view_month",
-                                          st.session_state["cost_month_input"])
-        df_fixed = pd.read_sql("""
-            SELECT fixed_cost_id as ID, settlement_month as 정산연월,
-                   expense_item as 지출항목, total_billed_amount as 총청구금액
-            FROM monthly_fixedcost
-            WHERE settlement_month = ?
-            ORDER BY fixed_cost_id
-        """, conn, params=(fc_view_month,))
-        df_fixed.insert(0, "삭제", False)
+    st.markdown("---")
+    st.markdown("##### 등록된 고정비 내역 (체크박스로 삭제 가능)")
+    fc_view_month = month_view_select(conn, "monthly_fixedcost", "fc_view_month",
+                                      st.session_state["cost_month_input"])
+    df_fixed = pd.read_sql("""
+        SELECT fixed_cost_id as ID, settlement_month as 정산연월,
+               expense_item as 지출항목, total_billed_amount as 총청구금액
+        FROM monthly_fixedcost
+        WHERE settlement_month = ?
+        ORDER BY fixed_cost_id
+    """, conn, params=(fc_view_month,))
+    df_fixed.insert(0, "삭제", False)
         
-        edited_fc_df = st.data_editor(
-            df_fixed,
-            width="stretch",
-            hide_index=True,
-            disabled=["ID"],
-            num_rows="fixed",  # 행 추가는 위 등록 폼으로만, 삭제는 '삭제' 체크박스로
-            key=f"fixedcost_editor_{fc_view_month}",
-            column_config={
-                "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
-                "ID": st.column_config.NumberColumn(width="small"),
-                "총청구금액": st.column_config.NumberColumn("총청구금액 (원)", format="localized", alignment="right"),
-            },
-        )
-        fc_kept = edited_fc_df[~edited_fc_df["삭제"].fillna(False).astype(bool)]
-        show_table_total(
-            len(fc_kept), "총청구금액",
-            pd.to_numeric(fc_kept["총청구금액"], errors="coerce").fillna(0).sum(),
-        )
+    edited_fc_df = farm_data_editor(
+        df_fixed,
+        width="stretch",
+        hide_index=True,
+        disabled=["ID"],
+        num_rows="fixed",  # 행 추가는 위 등록 폼으로만, 삭제는 '삭제' 체크박스로
+        key=f"fixedcost_editor_{fc_view_month}",
+        column_config={
+            "삭제": st.column_config.CheckboxColumn("삭제", width=50),
+            "ID": None,
+            "정산연월": None,  # 위 '조회 연월'과 같은 값만 반복되므로 숨김
+            "총청구금액": st.column_config.NumberColumn("총청구금액 (원)", format="localized", alignment="right", step=1),
+        },
+    )
+    fc_kept = edited_fc_df[~edited_fc_df["삭제"].fillna(False).astype(bool)]
+    show_table_total(
+        len(fc_kept), "총청구금액",
+        pd.to_numeric(fc_kept["총청구금액"], errors="coerce").fillna(0).sum(),
+    )
 
-        if st.button("고정비 수정 사항 저장", type="primary", width="stretch"):
-            fc_changed, fc_deleted, _ = editor_changes(df_fixed, edited_fc_df, "ID", ["정산연월", "지출항목", "총청구금액"])
-            fc_changed = fc_changed[fc_changed['정산연월'].notna() & (fc_changed['정산연월'].astype(str).str.strip() != "")]
+    if st.button("고정비 수정 사항 저장", type="primary", width="stretch"):
+        fc_changed, fc_deleted, _ = editor_changes(df_fixed, edited_fc_df, "ID", ["정산연월", "지출항목", "총청구금액"])
+        fc_changed = fc_changed[fc_changed['정산연월'].notna() & (fc_changed['정산연월'].astype(str).str.strip() != "")]
 
-            def _save_fixedcost():
-                write_conn = db_connect(DB_FILE)
-                for _, row in fc_changed.iterrows():
-                    write_conn.execute(
-                        "UPDATE monthly_fixedcost SET settlement_month=?, expense_item=?, total_billed_amount=? WHERE fixed_cost_id=?",
-                        (row['정산연월'], row['지출항목'], row['총청구금액'], int(row['ID']))
-                    )
-                for mid in fc_deleted['ID']:
-                    write_conn.execute("DELETE FROM monthly_fixedcost WHERE fixed_cost_id=?", (int(mid),))
-                write_conn.commit()
-                write_conn.close()
-                notify(f"고정비 수정 {len(fc_changed)}건, 삭제 {len(fc_deleted)}건 저장했습니다.", icon="✅")
+        def _save_fixedcost():
+            write_conn = db_connect(DB_FILE)
+            for _, row in fc_changed.iterrows():
+                write_conn.execute(
+                    "UPDATE monthly_fixedcost SET settlement_month=?, expense_item=?, total_billed_amount=? WHERE fixed_cost_id=?",
+                    (row['정산연월'], row['지출항목'], row['총청구금액'], int(row['ID']))
+                )
+            for mid in fc_deleted['ID']:
+                write_conn.execute("DELETE FROM monthly_fixedcost WHERE fixed_cost_id=?", (int(mid),))
+            write_conn.commit()
+            write_conn.close()
+            notify(f"고정비 수정 {len(fc_changed)}건, 삭제 {len(fc_deleted)}건 저장했습니다.", icon="✅")
 
-            save_with_delete_confirm("고정비", fc_changed, fc_deleted, edited_fc_df.iloc[0:0],
-                                     ["ID", "정산연월", "지출항목", "총청구금액"], "총청구금액", _save_fixedcost)
+        save_with_delete_confirm("고정비", fc_changed, fc_deleted, edited_fc_df.iloc[0:0],
+                                 ["ID", "정산연월", "지출항목", "총청구금액"], "총청구금액", _save_fixedcost)
 
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.markdown("### 🚀 월말 정산(일할계산) 실행")
@@ -3880,8 +3999,9 @@ with tab2:
     elif st.session_state["calc_target_month"] not in calc_months:
         # 위에서 비용이 없는 달로 바꾼 경우: 선택지에 없으니 가장 최근 등록 연월로 둔다.
         st.session_state["calc_target_month"] = calc_months[0]
-    target_month = st.selectbox("정산 대상 연월", calc_months, key="calc_target_month",
-                                format_func=lambda m: f"{m}  (정산 완료)" if m in settled_months_set else m)
+    target_month = st.columns([1, 3])[0].selectbox(
+        "정산 대상 연월", calc_months, key="calc_target_month",
+        format_func=lambda m: f"{m}  (정산 완료)" if m in settled_months_set else m)
     
     # 정산 전 요약 미리보기 — 실제 정산과 같은 기준(settlement_cattle)으로 두수와 고정비 몫을 계산한다.
     preview_usage = pd.read_sql("""
@@ -3916,8 +4036,8 @@ with tab2:
         summary['두당평균'] = (summary['총합계'] / summary['두수'].where(summary['두수'] > 0)).fillna(0)
 
         st.markdown(f"**[{target_month}] 정산 대상 비용 요약** (입식 당일 제외, 실제 배분 기준 두수)")
-        money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right")
-        st.dataframe(
+        money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right", step=1)
+        farm_dataframe(
             summary.style.apply(
                 lambda r: ['font-weight: 800; background-color: #EAF2ED' if r['시험군'] == '전체' else ''] * len(r),
                 axis=1,
@@ -3942,7 +4062,7 @@ with tab2:
     ).fetchone()[0]
 
     if settled_count == 0:
-        if st.button("🚀 정산 실행(일할계산) 및 누적원가 반영", type="primary"):
+        if st.button("🚀 정산 실행(일할계산) 및 누적원가 반영", type="primary", width="stretch"):
             success, msg = distribute_monthly_costs(DB_FILE, target_month)
             if success:
                 st.success(msg)
@@ -3954,7 +4074,10 @@ with tab2:
             f"[{target_month}] 은 이미 {settled_count}마리로 정산되어 있습니다. 비용이나 개체 정보를 고쳤다면 "
             "기존 배분 내역을 지우고 다시 정산하세요. (실행 직전 자동 백업)"
         )
-        if st.button("🔄 기존 정산 지우고 다시 정산", type="primary"):
+        confirm_resettle = st.checkbox(f"[{target_month}] 기존 배분 내역 {settled_count}건을 지우고 다시 정산합니다",
+                                       key=f"resettle_confirm_{target_month}")
+        if st.button("🔄 기존 정산 지우고 다시 정산", type="secondary", width="stretch",
+                     disabled=not confirm_resettle, key=f"danger_resettle_{target_month}"):
             backup_db(DB_FILE, f"before-resettle-{target_month}")
             success, msg = distribute_monthly_costs(DB_FILE, target_month, replace=True)
             if success:
@@ -3967,7 +4090,7 @@ with tab2:
         with st.expander(f"🗑️ [{target_month}] 정산 취소 (배분 내역 삭제)"):
             st.caption("이 달에 개체별로 배분된 원가 기록만 지웁니다. 등록된 사용량·고정비는 지우지 않으며, 실행 직전 자동 백업됩니다.")
             confirm_cancel = st.checkbox(f"[{target_month}] 정산 {settled_count}마리 배분 내역을 삭제합니다", key=f"cancel_settle_confirm_{target_month}")
-            if st.button("정산 취소", disabled=not confirm_cancel, key=f"cancel_settle_btn_{target_month}"):
+            if st.button("정산 취소", disabled=not confirm_cancel, width="stretch", key=f"danger_cancel_settle_{target_month}"):
                 backup_db(DB_FILE, f"before-cancel-settle-{target_month}")
                 write_conn = db_connect(DB_FILE)
                 write_conn.execute("DELETE FROM cattle_item_usage_log WHERE settlement_month = ?", (target_month,))
@@ -3978,7 +4101,7 @@ with tab2:
                 st.rerun()
 
     st.markdown("---")
-    st.subheader(f"[{target_month}] 개체별 원가 적재 결과")
+    st.subheader(f"📒 [{target_month}] 개체별 원가 적재 결과")
     try:
         # 누적 원가 = 구입비용합계(initial_cost) + 정산 대상 연월까지 적재된 변동비·고정비 합계
         df_log = pd.read_sql("""
@@ -3999,12 +4122,12 @@ with tab2:
             st.info("해당 연월에 아직 정산된 내역이 없습니다.")
         else:
             df_log['누적_원가'] = df_log['구입원가'] + df_log['누적_사육비']
-            money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right")
-            st.dataframe(
+            money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right", step=1)
+            farm_dataframe(
                 df_log, width="stretch", hide_index=True,
                 column_config={
-                    "cattle_id": st.column_config.TextColumn("이표번호"),
-                    "settlement_month": st.column_config.TextColumn("정산연월"),
+                    "cattle_id": st.column_config.TextColumn("이표번호", pinned=True),
+                    "settlement_month": None,  # 제목의 연월과 같은 값만 반복되므로 숨김
                     "변동비_할당": money("변동비 할당 (원)"),
                     "고정비_할당": money("고정비 할당 (원)"),
                     "당월_추가원가": money("당월 추가원가 (원)"),
@@ -4018,7 +4141,7 @@ with tab2:
 
             # 두당 평균 원가 (이번 정산 대상 개체 기준)
             st.markdown(f"##### 📊 [{target_month}] 두당 평균 원가 ({len(df_log):,}두)")
-            avg_cols = st.columns(4)
+            avg_cols = st.container(key="kpi_avg").columns(4)
             avg_cols[0].metric("평균 당월 추가원가", f"{df_log['당월_추가원가'].mean():,.0f}원")
             avg_cols[1].metric("평균 구입원가", f"{df_log['구입원가'].mean():,.0f}원")
             avg_cols[2].metric("평균 누적 사육비", f"{df_log['누적_사육비'].mean():,.0f}원")
@@ -4038,7 +4161,7 @@ with tab2:
                 .reset_index()
             )
             if len(by_group) > 1:
-                st.dataframe(
+                farm_dataframe(
                     by_group, width="stretch", hide_index=True,
                     column_config={
                         "두수": st.column_config.NumberColumn("두수", format="localized", alignment="right"),
@@ -4100,8 +4223,9 @@ with tab_report:
     if not settled_months:
         st.info("아직 정산된 연월이 없습니다. 먼저 '🚀 월말 정산(일할계산) 실행' 탭에서 정산을 실행하세요.")
     else:
-        report_month = st.selectbox("리포트 연월", settled_months, key="report_month_select")
-        if st.button("📄 결산 리포트 생성", type="primary", key="gen_report_btn"):
+        report_col, _ = st.columns([1, 3])
+        report_month = report_col.selectbox("리포트 연월", settled_months, key="report_month_select")
+        if report_col.button("📄 결산 리포트 생성", type="primary", key="gen_report_btn", width="stretch"):
             ok, result = generate_settlement_report(DB_FILE, selected_farm, report_month)
             if ok:
                 st.session_state["report_html"] = result
@@ -4124,7 +4248,16 @@ with tab_report:
             st.iframe(report_html, height=900)
 
 with tab_slaughter:
-    st.subheader("🥩 도축 성적 관리")
-    st.info("이 탭은 추후 출하(도축)된 개체들의 도축 성적(등급, 도체중, 등심단면적, 근내지방도 등)을 기록하고 확인하기 위한 메뉴입니다.\n\n현재 준비중입니다.")
+    st.markdown(
+        '<div class="farm-coming"><h3>🥩 도축 성적 관리 <span class="farm-badge">준비중</span></h3>'
+        '<p>출하(도축)된 개체의 도축 성적을 기록하고 시험군별로 비교하는 메뉴입니다. 아래 항목이 들어갈 예정입니다.</p>'
+        '<div class="farm-coming-grid">'
+        '<div class="farm-coming-card"><b>등급</b><span>육질·육량 등급 (1++, 1+, 1, 2, 3 / A·B·C)</span></div>'
+        '<div class="farm-coming-card"><b>도체중</b><span>kg, 시험군별 평균 비교</span></div>'
+        '<div class="farm-coming-card"><b>등심단면적</b><span>㎠, 개체·시험군별 분포</span></div>'
+        '<div class="farm-coming-card"><b>근내지방도</b><span>No.1~9, 등급 판정 근거</span></div>'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
 
 conn.close()
