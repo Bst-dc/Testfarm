@@ -410,6 +410,68 @@ def duplicate_item_dialog(message, dup_df):
         st.rerun()
 
 
+def _same_value(a, b):
+    if pd.isna(a) and pd.isna(b):
+        return True
+    if pd.isna(a) or pd.isna(b):
+        return False
+    try:
+        return abs(float(a) - float(b)) < 1e-9
+    except (TypeError, ValueError):
+        return str(a).strip() == str(b).strip()
+
+
+def editor_changes(original, edited, id_col, cols):
+    """편집표(st.data_editor)에서 사용자가 실제로 바꾼 것만 골라낸다.
+
+    예전에는 저장할 때 표의 모든 줄을 화면 값으로 덮어쓰고, 표에서 빠진 줄은 모두 삭제했다.
+    그래서 화면이 오래된 상태(다른 곳에서 바꾼 직후)거나 다른 농장의 편집 상태가 섞이면
+    고치지 않은 줄이 되돌아가거나 통째로 지워졌다. 이제는
+      - changed: 기존 줄 중 cols 값이 원래와 달라진 줄 (삭제 체크한 줄 제외)
+      - deleted: '삭제'에 체크한 기존 줄
+      - added  : 표 아래에 새로 추가한 줄 (num_rows="add" 인 표만)
+    만 돌려준다."""
+    existing = edited[edited.index.isin(original.index)]
+    added = edited[~edited.index.isin(original.index)]
+    delete_mask = existing["삭제"].fillna(False).astype(bool)
+    deleted = existing[delete_mask & existing[id_col].notna()]
+    kept = existing[~delete_mask]
+    changed_idx = [
+        idx for idx, row in kept.iterrows()
+        if any(not _same_value(row[c], original.at[idx, c]) for c in cols)
+    ]
+    return kept.loc[changed_idx], deleted, added
+
+
+@st.dialog("⚠️ 삭제 확인")
+def confirm_delete_dialog(message, preview_df, on_confirm):
+    """삭제가 들어간 저장은 지워질 줄을 보여 주고 한 번 더 확인받은 뒤 실행한다."""
+    st.warning(message)
+    st.dataframe(preview_df, width="stretch", hide_index=True)
+    col_cancel, col_ok = st.columns(2)
+    if col_cancel.button("취소", width="stretch"):
+        st.rerun()
+    if col_ok.button("삭제하고 저장", type="primary", width="stretch"):
+        on_confirm()
+        st.rerun()
+
+
+def save_with_delete_confirm(label, changed, deleted, added, preview_cols, amount_col, on_save):
+    """바뀐 것이 없으면 알리고, 삭제가 있으면 확인 팝업을, 없으면 바로 저장한다."""
+    if changed.empty and deleted.empty and added.empty:
+        st.info("바뀐 내용이 없습니다.")
+        return
+    if deleted.empty:
+        on_save()
+        st.rerun()
+    msg = f"{label} {len(deleted)}건을 삭제합니다."
+    if amount_col:
+        msg += f" (금액 합계 {pd.to_numeric(deleted[amount_col], errors='coerce').fillna(0).sum():,.0f}원)"
+    if not changed.empty or not added.empty:
+        msg += f" 수정 {len(changed)}건, 추가 {len(added)}건도 함께 저장됩니다."
+    confirm_delete_dialog(msg, deleted[preview_cols], on_save)
+
+
 def show_table_total(count, amount_label, amount):
     """편집표(st.data_editor) 바로 아래에 합계 줄을 붙인다. 표 안에 합계 행을 넣으면
     저장 시 실제 데이터로 들어가 버리므로 표 밖에 따로 그린다."""
@@ -3068,7 +3130,7 @@ with tab0:
                 "현재재고": st.column_config.NumberColumn(format="localized", alignment="right"),
                 "이동평균단가": st.column_config.NumberColumn("이동평균단가 (원)", format="localized", alignment="right"),
             },
-            num_rows="dynamic",
+            num_rows="fixed",  # 품목 추가는 위 등록 폼으로만, 삭제는 '삭제' 체크박스로
             key="item_master_editor"
         )
 
@@ -3085,25 +3147,28 @@ with tab0:
                     dup_items[["품목코드", "품목명", "분류", "단위"]],
                 )
             else:
-                write_conn = db_connect(DB_FILE)
-                current_codes = edited_item_df[~edited_item_df["삭제"]]['품목코드'].dropna().tolist()
+                item_changed, item_deleted, _ = editor_changes(
+                    df_items_all, edited_item_df, "품목코드", ["품목명", "분류", "단위"])
 
-                for _, row in edited_item_df.iterrows():
-                    if not row.get("삭제", False) and pd.notna(row['품목코드']):
-                        write_conn.execute("UPDATE item_master SET item_name=?, category=?, unit=? WHERE item_code=?", (row['품목명'], row['분류'], row.get('단위'), row['품목코드']))
-            
-                original_codes = df_items_all['품목코드'].dropna().tolist()
-                missing_codes = set(original_codes) - set(current_codes)
-                for code in missing_codes:
-                    try:
-                        write_conn.execute("DELETE FROM item_master WHERE item_code=?", (code,))
-                    except sqlite3.IntegrityError:
-                        st.error(f"'{code}' 품목은 매입 등 사용 내역이 있어 삭제할 수 없습니다.")
-            
-                write_conn.commit()
-                write_conn.close()
-                notify("품목 내역이 업데이트 되었습니다.", icon="✅")
-                st.rerun()
+                def _save_items():
+                    write_conn = db_connect(DB_FILE)
+                    for _, row in item_changed.iterrows():
+                        write_conn.execute("UPDATE item_master SET item_name=?, category=?, unit=? WHERE item_code=?",
+                                           (row['품목명'], row['분류'], row.get('단위'), row['품목코드']))
+                    blocked = []
+                    for code in item_deleted['품목코드']:
+                        try:
+                            write_conn.execute("DELETE FROM item_master WHERE item_code=?", (code,))
+                        except sqlite3.IntegrityError:
+                            blocked.append(code)
+                    write_conn.commit()
+                    write_conn.close()
+                    notify(f"품목 수정 {len(item_changed)}건, 삭제 {len(item_deleted) - len(blocked)}건 저장했습니다.", icon="✅")
+                    if blocked:
+                        notify(f"매입·사용 내역이 있어 삭제하지 못한 품목: {', '.join(blocked)}", icon="⚠️")
+
+                save_with_delete_confirm("품목", item_changed, item_deleted, edited_item_df.iloc[0:0],
+                                         ["품목코드", "품목명", "분류", "단위", "현재재고"], None, _save_items)
     
     with col_right:
         st.subheader("🚚 매입(입고) 등록")
@@ -3349,7 +3414,7 @@ with tab0:
             width="stretch",
             hide_index=True,
             disabled=["매입ID", "품목명", "단가"],
-            num_rows="dynamic",
+            num_rows="add",  # 줄 추가만 허용. 삭제는 '삭제' 체크박스로만 (줄을 빼서 지우는 일이 없게)
             key="purchase_editor",
             column_config={
                 "삭제": st.column_config.CheckboxColumn("삭제", width="small"),
@@ -3361,38 +3426,36 @@ with tab0:
         )
         
         if st.button("매입 수정 사항 저장", type="primary", width="stretch"):
-            write_conn = db_connect(DB_FILE)
-            current_ids = edited_purchase_df[~edited_purchase_df["삭제"]]['매입ID'].dropna().tolist()
-            
-            for _, row in edited_purchase_df.iterrows():
-                if not row.get("삭제", False):
-                    pid = row['매입ID']
-                    if pd.notna(pid):
-                        write_conn.execute("UPDATE purchase SET purchase_date=?, item_code=?, quantity=?, unit=?, total_amount=? WHERE purchase_id=?", 
-                                         (row['매입일자'], row['품목코드'], row['수량'], row.get('단위', ''), row['총금액'], pid))
-                    else:
-                        if pd.notna(row['매입일자']) and pd.notna(row['품목코드']):
-                            write_conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount) VALUES (?, ?, ?, ?, ?)",
-                                             (row['매입일자'], row['품목코드'], row['수량'], row.get('단위', ''), row['총금액']))
-            
-            original_ids = df_purchase['매입ID'].dropna().tolist()
-            missing_ids = set(original_ids) - set(current_ids)
-            for mid in missing_ids:
-                write_conn.execute("DELETE FROM purchase WHERE purchase_id=?", (mid,))
-                
-            # 전체 품목 재고 및 단가 재계산
-            items = pd.read_sql("SELECT item_code FROM item_master", write_conn)
-            for item in items['item_code']:
-                purchases = pd.read_sql("SELECT quantity, total_amount FROM purchase WHERE item_code=? ORDER BY purchase_date ASC", write_conn, params=(item,))
-                stock = float(purchases['quantity'].sum()) if not purchases.empty else 0.0
-                total_val = float(purchases['total_amount'].sum()) if not purchases.empty else 0.0
-                avg_price = round(total_val / stock, 2) if stock > 0 else 0
-                write_conn.execute("UPDATE item_master SET current_stock=?, moving_avg_price=? WHERE item_code=?", (stock, avg_price, item))
-                
-            write_conn.commit()
-            write_conn.close()
-            notify("매입 내역이 업데이트 및 재고가 재계산 되었습니다.", icon="✅")
-            st.rerun()
+            pur_changed, pur_deleted, pur_added = editor_changes(
+                df_purchase, edited_purchase_df, "매입ID", ["매입일자", "품목코드", "수량", "단위", "총금액"])
+            pur_added = pur_added[pur_added['매입일자'].notna() & pur_added['품목코드'].notna()]
+
+            def _save_purchases():
+                write_conn = db_connect(DB_FILE)
+                for _, row in pur_changed.iterrows():
+                    write_conn.execute("UPDATE purchase SET purchase_date=?, item_code=?, quantity=?, unit=?, total_amount=? WHERE purchase_id=?",
+                                       (row['매입일자'], row['품목코드'], row['수량'], row.get('단위', ''), row['총금액'], row['매입ID']))
+                for _, row in pur_added.iterrows():
+                    write_conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount) VALUES (?, ?, ?, ?, ?)",
+                                       (row['매입일자'], row['품목코드'], row['수량'], row.get('단위', ''), row['총금액']))
+                for mid in pur_deleted['매입ID']:
+                    write_conn.execute("DELETE FROM purchase WHERE purchase_id=?", (mid,))
+
+                # 전체 품목 재고 및 단가 재계산
+                items = pd.read_sql("SELECT item_code FROM item_master", write_conn)
+                for item in items['item_code']:
+                    purchases = pd.read_sql("SELECT quantity, total_amount FROM purchase WHERE item_code=? ORDER BY purchase_date ASC", write_conn, params=(item,))
+                    stock = float(purchases['quantity'].sum()) if not purchases.empty else 0.0
+                    total_val = float(purchases['total_amount'].sum()) if not purchases.empty else 0.0
+                    avg_price = round(total_val / stock, 2) if stock > 0 else 0
+                    write_conn.execute("UPDATE item_master SET current_stock=?, moving_avg_price=? WHERE item_code=?", (stock, avg_price, item))
+
+                write_conn.commit()
+                write_conn.close()
+                notify(f"매입 수정 {len(pur_changed)}건, 추가 {len(pur_added)}건, 삭제 {len(pur_deleted)}건 저장 · 재고 재계산 완료", icon="✅")
+
+            save_with_delete_confirm("매입", pur_changed, pur_deleted, pur_added,
+                                     ["매입ID", "매입일자", "품목명", "수량", "단위", "총금액"], "총금액", _save_purchases)
 
 with tab2:
     st.subheader("월말 비용 등록 및 조회")
@@ -3608,29 +3671,25 @@ with tab2:
         )
 
         if st.button("사용 내역 수정 사항 저장", type="primary", width="stretch"):
-            write_conn = db_connect(DB_FILE)
-            current_usage_ids = edited_usage_df[~edited_usage_df["삭제"]]['ID'].dropna().tolist()
+            use_changed, use_deleted, _ = editor_changes(df_usage, edited_usage_df, "ID", ["정산연월", "사용량", "적용단가"])
 
-            for _, row in edited_usage_df.iterrows():
-                uid = row['ID']
-                if not row.get("삭제", False) and pd.notna(uid):
+            def _save_usage():
+                write_conn = db_connect(DB_FILE)
+                for _, row in use_changed.iterrows():
                     qty = float(row['사용량'])
                     price = float(row['적용단가'])
-                    calc_amount = round(qty * price, 2)
                     write_conn.execute(
                         "UPDATE monthly_usage SET settlement_month=?, total_usage=?, applied_price=?, calculated_amount=? WHERE usage_id=?",
-                        (row['정산연월'], qty, price, calc_amount, uid)
+                        (row['정산연월'], qty, price, round(qty * price, 2), row['ID'])
                     )
+                for uid in use_deleted['ID']:
+                    write_conn.execute("DELETE FROM monthly_usage WHERE usage_id=?", (uid,))
+                write_conn.commit()
+                write_conn.close()
+                notify(f"사용 내역 수정 {len(use_changed)}건, 삭제 {len(use_deleted)}건 저장했습니다.", icon="✅")
 
-            original_usage_ids = df_usage['ID'].dropna().tolist()
-            missing_usage_ids = set(original_usage_ids) - set(current_usage_ids)
-            for uid in missing_usage_ids:
-                write_conn.execute("DELETE FROM monthly_usage WHERE usage_id=?", (uid,))
-
-            write_conn.commit()
-            write_conn.close()
-            notify("사용 내역이 업데이트 되었습니다.", icon="✅")
-            st.rerun()
+            save_with_delete_confirm("사용 내역", use_changed, use_deleted, edited_usage_df.iloc[0:0],
+                                     ["ID", "정산연월", "시험군", "품목명", "사용량", "산출총액"], "산출총액", _save_usage)
     
     with col_d:
         st.markdown("##### ⚡ 농장 고정비 등록")
@@ -3703,31 +3762,24 @@ with tab2:
         )
 
         if st.button("고정비 수정 사항 저장", type="primary", width="stretch"):
-            write_conn = db_connect(DB_FILE)
-            current_ids = edited_fc_df[~edited_fc_df["삭제"]]['ID'].dropna().tolist()
-            
-            original_ids = df_fixed['ID'].dropna().tolist()
-            missing_ids = set(original_ids) - set(current_ids)
-            for mid in missing_ids:
-                write_conn.execute("DELETE FROM monthly_fixedcost WHERE fixed_cost_id=?", (int(mid),))
-                
-            for _, row in edited_fc_df.iterrows():
-                if not row.get("삭제", False) and pd.notna(row['정산연월']) and str(row['정산연월']).strip() != "":
-                    fid = row['ID']
-                    if pd.isna(fid):
-                        write_conn.execute(
-                            "INSERT INTO monthly_fixedcost (settlement_month, expense_item, total_billed_amount) VALUES (?, ?, ?)",
-                            (row['정산연월'], row['지출항목'], row['총청구금액'])
-                        )
-                    else:
-                        write_conn.execute(
-                            "UPDATE monthly_fixedcost SET settlement_month=?, expense_item=?, total_billed_amount=? WHERE fixed_cost_id=?",
-                            (row['정산연월'], row['지출항목'], row['총청구금액'], int(fid))
-                        )
-            write_conn.commit()
-            write_conn.close()
-            notify("고정비 내역이 업데이트 되었습니다.", icon="✅")
-            st.rerun()
+            fc_changed, fc_deleted, _ = editor_changes(df_fixed, edited_fc_df, "ID", ["정산연월", "지출항목", "총청구금액"])
+            fc_changed = fc_changed[fc_changed['정산연월'].notna() & (fc_changed['정산연월'].astype(str).str.strip() != "")]
+
+            def _save_fixedcost():
+                write_conn = db_connect(DB_FILE)
+                for _, row in fc_changed.iterrows():
+                    write_conn.execute(
+                        "UPDATE monthly_fixedcost SET settlement_month=?, expense_item=?, total_billed_amount=? WHERE fixed_cost_id=?",
+                        (row['정산연월'], row['지출항목'], row['총청구금액'], int(row['ID']))
+                    )
+                for mid in fc_deleted['ID']:
+                    write_conn.execute("DELETE FROM monthly_fixedcost WHERE fixed_cost_id=?", (int(mid),))
+                write_conn.commit()
+                write_conn.close()
+                notify(f"고정비 수정 {len(fc_changed)}건, 삭제 {len(fc_deleted)}건 저장했습니다.", icon="✅")
+
+            save_with_delete_confirm("고정비", fc_changed, fc_deleted, edited_fc_df.iloc[0:0],
+                                     ["ID", "정산연월", "지출항목", "총청구금액"], "총청구금액", _save_fixedcost)
 
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.markdown("### 🚀 월말 정산(일할계산) 실행")
