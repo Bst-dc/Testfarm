@@ -396,6 +396,20 @@ def reset_item_entry(key):
     st.session_state[f"_{key}_ver"] = st.session_state.get(f"_{key}_ver", 0) + 1
 
 
+def normalize_item_name(name):
+    """품목명 중복 비교용: 띄어쓰기와 대소문자를 무시한다 ('팔공 1' == '팔공1')."""
+    return re.sub(r"\s+", "", str(name or "")).lower()
+
+
+@st.dialog("⚠️ 중복된 품목이 있습니다")
+def duplicate_item_dialog(message, dup_df):
+    st.warning(message)
+    st.dataframe(dup_df, width="stretch", hide_index=True)
+    st.caption("품목명은 띄어쓰기·대소문자를 무시하고 비교합니다. 다른 품목이면 이름을 구분되게 바꿔 주세요.")
+    if st.button("확인", type="primary", width="stretch"):
+        st.rerun()
+
+
 def show_table_total(count, amount_label, amount):
     """편집표(st.data_editor) 바로 아래에 합계 줄을 붙인다. 표 안에 합계 행을 넣으면
     저장 시 실제 데이터로 들어가 버리므로 표 밖에 따로 그린다."""
@@ -2991,33 +3005,43 @@ with tab0:
             new_item_unit = st.selectbox("단위", ["kg", "ml", "개"])
             submitted_item = st.form_submit_button("품목 등록", type="primary", width="stretch")
             if submitted_item:
+                new_item_name = new_item_name.strip()
                 if new_item_name:
-                    try:
-                        write_conn = db_connect(DB_FILE)
-                        # 제출 시점에 한 번 더 최신 코드를 확인하여 동시 접속 시 충돌 방지
-                        cur_w = write_conn.cursor()
-                        cur_w.execute("SELECT item_code FROM item_master")
-                        curr_codes = [r[0] for r in cur_w.fetchall()]
-                        m_num = 0
-                        for c in curr_codes:
-                            d = ''.join(filter(str.isdigit, str(c)))
-                            if d: m_num = max(m_num, int(d))
-                        final_item_code = f"ITEM{m_num + 1}"
-
-                        write_conn.execute(
-                            "INSERT INTO item_master (item_code, item_name, category, unit, current_stock, moving_avg_price) VALUES (?, ?, ?, ?, 0, 0)",
-                            (final_item_code, new_item_name, new_item_category, new_item_unit)
-                        )
-                        write_conn.commit()
+                    write_conn = db_connect(DB_FILE)
+                    # 같은 품목을 두 번 등록하면 매입·사용량이 둘로 나뉘어 재고와 단가가 어긋난다.
+                    existing = pd.read_sql("SELECT item_code AS 품목코드, item_name AS 품목명, category AS 분류, unit AS 단위 FROM item_master", write_conn)
+                    dup = existing[existing["품목명"].map(normalize_item_name) == normalize_item_name(new_item_name)]
+                    if not dup.empty:
                         write_conn.close()
-                        notify(f"품목 '{new_item_name}' ({final_item_code})이 등록되었습니다.", icon="✅")
-                        st.rerun()
-                    except sqlite3.IntegrityError as e:
-                        write_conn.rollback(); write_conn.close()
-                        st.error(f"품목 등록 중 오류가 발생했습니다: {e}")
+                        st.session_state["_dup_item_alert"] = (
+                            f"'{new_item_name}' 은(는) 이미 등록된 품목입니다. 등록하지 않았습니다.", dup)
+                    else:
+                        try:
+                            # 제출 시점에 한 번 더 최신 코드를 확인하여 동시 접속 시 충돌 방지
+                            m_num = 0
+                            for c in existing["품목코드"]:
+                                d = ''.join(filter(str.isdigit, str(c)))
+                                if d: m_num = max(m_num, int(d))
+                            final_item_code = f"ITEM{m_num + 1}"
+
+                            write_conn.execute(
+                                "INSERT INTO item_master (item_code, item_name, category, unit, current_stock, moving_avg_price) VALUES (?, ?, ?, ?, 0, 0)",
+                                (final_item_code, new_item_name, new_item_category, new_item_unit)
+                            )
+                            write_conn.commit()
+                            write_conn.close()
+                            notify(f"품목 '{new_item_name}' ({final_item_code})이 등록되었습니다.", icon="✅")
+                            st.rerun()
+                        except sqlite3.IntegrityError as e:
+                            write_conn.rollback(); write_conn.close()
+                            st.error(f"품목 등록 중 오류가 발생했습니다: {e}")
                 else:
                     st.warning("품목명을 입력하세요.")
-        
+
+        # 중복 경고 팝업은 폼 밖에서 띄운다 (폼 안에서는 대화상자를 열 수 없다).
+        if "_dup_item_alert" in st.session_state:
+            duplicate_item_dialog(*st.session_state.pop("_dup_item_alert"))
+
         st.markdown("---")
         st.markdown("##### 등록된 품목 목록 (체크박스로 삭제 가능)")
         df_items_all = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, unit as 단위, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
@@ -3038,26 +3062,38 @@ with tab0:
             key="item_master_editor"
         )
 
-        if st.button("품목 수정 사항 저장", type="primary", width="stretch"):
-            write_conn = db_connect(DB_FILE)
-            current_codes = edited_item_df[~edited_item_df["삭제"]]['품목코드'].dropna().tolist()
+        # 표에서 이름을 고쳐 다른 품목과 같아지는 경우도 막는다 (삭제 체크한 줄은 제외).
+        kept_items = edited_item_df[~edited_item_df["삭제"].fillna(False).astype(bool) & edited_item_df["품목명"].notna()]
+        kept_norm = kept_items["품목명"].map(normalize_item_name)
+        dup_items = kept_items[kept_norm.duplicated(keep=False) & kept_norm.ne("")]
 
-            for _, row in edited_item_df.iterrows():
-                if not row.get("삭제", False) and pd.notna(row['품목코드']):
-                    write_conn.execute("UPDATE item_master SET item_name=?, category=?, unit=? WHERE item_code=?", (row['품목명'], row['분류'], row.get('단위'), row['품목코드']))
+        if st.button("품목 수정 사항 저장", type="primary", width="stretch"):
+            if not dup_items.empty:
+                duplicate_item_dialog(
+                    "같은 이름의 품목이 두 개 이상 있어 저장하지 않았습니다: "
+                    + ", ".join(sorted(set(dup_items["품목명"].astype(str)))),
+                    dup_items[["품목코드", "품목명", "분류", "단위"]],
+                )
+            else:
+                write_conn = db_connect(DB_FILE)
+                current_codes = edited_item_df[~edited_item_df["삭제"]]['품목코드'].dropna().tolist()
+
+                for _, row in edited_item_df.iterrows():
+                    if not row.get("삭제", False) and pd.notna(row['품목코드']):
+                        write_conn.execute("UPDATE item_master SET item_name=?, category=?, unit=? WHERE item_code=?", (row['품목명'], row['분류'], row.get('단위'), row['품목코드']))
             
-            original_codes = df_items_all['품목코드'].dropna().tolist()
-            missing_codes = set(original_codes) - set(current_codes)
-            for code in missing_codes:
-                try:
-                    write_conn.execute("DELETE FROM item_master WHERE item_code=?", (code,))
-                except sqlite3.IntegrityError:
-                    st.error(f"'{code}' 품목은 매입 등 사용 내역이 있어 삭제할 수 없습니다.")
+                original_codes = df_items_all['품목코드'].dropna().tolist()
+                missing_codes = set(original_codes) - set(current_codes)
+                for code in missing_codes:
+                    try:
+                        write_conn.execute("DELETE FROM item_master WHERE item_code=?", (code,))
+                    except sqlite3.IntegrityError:
+                        st.error(f"'{code}' 품목은 매입 등 사용 내역이 있어 삭제할 수 없습니다.")
             
-            write_conn.commit()
-            write_conn.close()
-            notify("품목 내역이 업데이트 되었습니다.", icon="✅")
-            st.rerun()
+                write_conn.commit()
+                write_conn.close()
+                notify("품목 내역이 업데이트 되었습니다.", icon="✅")
+                st.rerun()
     
     with col_right:
         st.subheader("🚚 매입(입고) 등록")
