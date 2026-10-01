@@ -3058,46 +3058,97 @@ with tab0:
         st.subheader("🚚 매입(입고) 등록")
         st.caption("사료·조사료·약품을 매입하면 재고와 이동평균단가가 자동 갱신됩니다.")
         
-        # 품목 목록 가져오기 (단위는 품목 등록 시 정한 값을 그대로 사용한다)
-        items_df = pd.read_sql("SELECT item_code, item_name, category, unit FROM item_master", conn)
+        # 품목 목록과 남은 수량(매입 누계 - 사용량 누계). 단위는 품목 등록 시 정한 값을 그대로 사용한다.
+        items_df = pd.read_sql("""
+            SELECT i.item_code, i.item_name, i.category, i.unit,
+                   COALESCE((SELECT SUM(p.quantity) FROM purchase p WHERE p.item_code = i.item_code), 0)
+                 - COALESCE((SELECT SUM(u.total_usage) FROM monthly_usage u WHERE u.item_code = i.item_code), 0) AS remaining
+            FROM item_master i
+        """, conn)
         if items_df.empty:
             st.info("먼저 좌측에서 품목을 등록해 주세요.")
         else:
-            item_units = {r['item_code']: r['unit'] for _, r in items_df.iterrows()}
+            item_units = {r['item_code']: (r['unit'] if pd.notna(r['unit']) else "") for _, r in items_df.iterrows()}
 
             # 거래명세서 한 장에 여러 품목이 함께 들어오므로, 매입일자는 한 번만 고르고
-            # 전체 품목 표에서 들어온 품목 옆에만 수량·금액을 넣어 한꺼번에 등록한다.
+            # 표에 줄마다 품목을 골라 수량·금액을 넣어 한꺼번에 등록한다 (시험군별 사용량 등록과 같은 방식).
             purchase_date = st.date_input("매입일자", key="purchase_date_input")
-            purchase_input_df = item_entry_table(
-                "purchase_entry", items_df['item_code'], items_df['item_name'],
-                {
+
+            # 선택지 이름에 남은 수량·단위를 붙여, 고른 뒤에도 칸에서 재고를 바로 볼 수 있게 한다.
+            # 주의: st.data_editor 는 넘기는 표(data)가 바뀌면 새 표로 보고 입력한 내용을 지운다.
+            # 그래서 표는 항상 같은 빈 표를 넘기고, 등록 후 비울 때는 키 버전을 올린다.
+            purchase_name_to_code = {}
+            for _, r in items_df.iterrows():
+                unit = item_units[r['item_code']]
+                label = f"{r['item_name']} · 남은 {float(r['remaining']):,.1f} {unit}".rstrip()
+                if label in purchase_name_to_code:  # 이름·재고가 같은 품목이 겹치면 코드로 구분
+                    label = f"{r['item_name']} ({r['item_code']}) · 남은 {float(r['remaining']):,.1f} {unit}".rstrip()
+                purchase_name_to_code[label] = r['item_code']
+            remaining_by_code = {r['item_code']: float(r['remaining']) for _, r in items_df.iterrows()}
+            purchase_ver = st.session_state.setdefault("_purchase_entry_ver", 0)
+            purchase_edited = st.data_editor(
+                pd.DataFrame({
+                    "품목": pd.Series([None] * 8, dtype="object"),
+                    "수량": pd.Series([None] * 8, dtype="float"),
+                    "총매입금액": pd.Series([None] * 8, dtype="float"),
+                }),
+                width="stretch",
+                hide_index=True,
+                num_rows="dynamic",
+                key=f"purchase_entry_editor_{purchase_ver}",
+                column_config={
+                    "품목": st.column_config.SelectboxColumn("품목 (남은 수량)", options=list(purchase_name_to_code.keys()), width="large"),
                     "수량": st.column_config.NumberColumn("매입수량", min_value=0, format="localized", alignment="right"),
                     "총매입금액": st.column_config.NumberColumn("총매입금액 (원)", min_value=0, format="localized", alignment="right"),
                 },
-                info={"단위": (items_df['unit'].fillna(""), st.column_config.TextColumn("단위", width="small"))},
             )
+            st.caption("품목 칸을 눌러 목록에서 고르고 수량·금액을 입력하세요. 빈 줄은 무시되고, 줄이 모자라면 표 아래 빈 칸을 눌러 추가합니다.")
+            purchase_blank_item = purchase_edited[
+                purchase_edited["품목"].isna()
+                & (purchase_edited["수량"].fillna(0).gt(0) | purchase_edited["총매입금액"].fillna(0).gt(0))
+            ]
+            purchase_input_df = purchase_edited[purchase_edited["품목"].notna()].copy()
+            purchase_input_df["코드"] = purchase_input_df["품목"].map(purchase_name_to_code)
+            purchase_input_df["항목"] = purchase_input_df["품목"].str.split(" · ").str[0]
 
-            filled = purchase_input_df
-            if not filled.empty:
-                preview_amt = pd.to_numeric(filled["총매입금액"], errors="coerce").fillna(0).sum()
-                show_table_total(len(filled), "총매입금액", preview_amt)
+            # 줄마다 단가와 등록 후 남은 수량을 미리 계산한다. 같은 품목이 여러 줄이면 앞 줄 매입분을 더해 이어서 계산.
+            problems, rows_to_insert, preview = [], [], []
+            if not purchase_blank_item.empty:
+                problems.append(f"수량·금액만 있고 품목이 비어 있는 줄이 {len(purchase_blank_item)}개 있습니다. 품목을 고르세요.")
+            for row in purchase_input_df.itertuples(index=False):
+                qty = float(row.수량) if pd.notna(row.수량) else 0.0
+                amt = float(row.총매입금액) if pd.notna(row.총매입금액) else 0.0
+                if qty <= 0 or amt <= 0:
+                    problems.append(f"{row.항목}: 수량과 금액을 0보다 크게 입력하세요.")
+                    continue
+                code = row.코드
+                rem = remaining_by_code[code]
+                remaining_by_code[code] = rem + qty
+                rows_to_insert.append((purchase_date.isoformat(), code, qty, item_units.get(code) or "", amt))
+                preview.append({
+                    "품목": row.항목, "현재 남은 수량": rem, "매입수량": qty, "단가": round(amt / qty, 2),
+                    "총매입금액": amt, "등록 후 남은 수량": rem + qty, "단위": item_units.get(code) or "",
+                })
+
+            if preview:
+                money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right")
+                st.dataframe(
+                    pd.DataFrame(preview), width="stretch", hide_index=True,
+                    column_config={
+                        "현재 남은 수량": st.column_config.NumberColumn(format="localized", alignment="right"),
+                        "매입수량": st.column_config.NumberColumn(format="localized", alignment="right"),
+                        "단가": money("단가 (원)"),
+                        "총매입금액": money("총매입금액 (원)"),
+                        "등록 후 남은 수량": st.column_config.NumberColumn(format="localized", alignment="right"),
+                    },
+                )
+                show_table_total(len(preview), "총매입금액", sum(r[4] for r in rows_to_insert))
 
             if st.button("매입 일괄 등록", type="primary", width="stretch", key="submit_purchase_btn"):
-                problems = []
-                rows_to_insert = []
-                for row in filled.itertuples(index=False):
-                    qty = float(row.수량) if pd.notna(row.수량) else 0.0
-                    amt = float(row.총매입금액) if pd.notna(row.총매입금액) else 0.0
-                    if qty <= 0 or amt <= 0:
-                        problems.append(f"{row.항목}: 수량과 금액을 0보다 크게 입력하세요.")
-                    else:
-                        code = row.코드
-                        rows_to_insert.append((purchase_date.isoformat(), code, qty, item_units.get(code) or "", amt))
-
                 if problems:
                     st.warning("등록하지 않았습니다. 아래 품목을 확인하세요.\n\n" + "\n".join(f"- {p}" for p in problems))
                 elif not rows_to_insert:
-                    st.warning("들어온 품목 옆에 수량·금액을 입력하세요.")
+                    st.warning("들어온 품목을 고르고 수량·금액을 입력하세요.")
                 else:
                     # 한 트랜잭션으로 넣어 일부만 들어가는 일이 없게 한다. 재고·이동평균단가는 트리거가 줄마다 갱신.
                     write_conn = db_connect(DB_FILE)
@@ -3109,7 +3160,7 @@ with tab0:
                         write_conn.commit()
                     finally:
                         write_conn.close()
-                    reset_item_entry("purchase_entry")
+                    st.session_state["_purchase_entry_ver"] = purchase_ver + 1
                     total_amt = sum(r[4] for r in rows_to_insert)
                     notify(f"매입 {len(rows_to_insert)}건 등록 완료! ({purchase_date.isoformat()}, 합계 {total_amt:,.0f}원)", icon="✅")
                     st.rerun()
