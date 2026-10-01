@@ -3326,6 +3326,9 @@ with tab_cattle:
                    c.castration_date as 거세일,
                    c.calf_price as 구입금액, c.commission_fee as 수수료,
                    c.transport_fee as 운송료, c.initial_cost as 구입비용합계,
+                   COALESCE((SELECT SUM(l.allocated_variable_cost + l.allocated_fixed_cost)
+                               FROM cattle_cost_log l WHERE l.cattle_id = c.cattle_id), 0) as 누적사육비,
+                   (SELECT MAX(l.settlement_month) FROM cattle_cost_log l WHERE l.cattle_id = c.cattle_id) as 원가반영월,
                    c.insurance_value as 보험가입금액, c.insurance_premium as 보험료,
                    c.closure_date as 종결일, c.memo as 비고
             FROM cattle c
@@ -3370,8 +3373,12 @@ with tab_cattle:
         cols_order = [
             '이표번호', 'KPN', '생년월일', '입식일', '입식시월령', '현재월령',
             '시험군', '상태', '우시장', '동', '우방', '사료구분', '조사료등급', '거세일',
-            '구입금액', '수수료', '운송료', '구입비용합계', '보험가입금액', '보험료', '종결일', '비고'
+            '구입금액', '수수료', '운송료', '구입비용합계', '누적사육비', '현재원가', '원가반영월',
+            '보험가입금액', '보험료', '종결일', '비고'
         ]
+        # 현재원가 = 구입비용합계 + 지금까지 정산(원가 적재)된 모든 달의 변동비·고정비 배분 합계
+        df_all_cattle['현재원가'] = (pd.to_numeric(df_all_cattle['구입비용합계'], errors='coerce').fillna(0)
+                                  + pd.to_numeric(df_all_cattle['누적사육비'], errors='coerce').fillna(0))
         df_all_cattle = df_all_cattle[cols_order]
 
         col_f1, col_f2, col_f3, col_f4 = st.container(key="grid2_cattle_filters").columns([1, 1, 1, 1.5])
@@ -3415,12 +3422,13 @@ with tab_cattle:
         st.markdown(
             f"**총 {len(df_all_cattle):,}건** &nbsp;·&nbsp; "
             + " &nbsp; ".join(f"{status_badge[s]} {int(cnt_by_status.get(s, 0)):,}두" for s in ('사육', '출하', '폐사'))
+            + f" &nbsp;·&nbsp; 현재원가 합계 **{pd.to_numeric(df_all_cattle['현재원가'], errors='coerce').fillna(0).sum():,.0f}원**"
         )
 
         # 날짜는 달력 형식, 금액은 숫자형으로 두고 표시 형식만 column_config 로 지정한다.
         for col in ['생년월일', '입식일', '거세일', '종결일']:
             df_all_cattle[col] = pd.to_datetime(df_all_cattle[col], errors='coerce')
-        money_cols = ['구입금액', '수수료', '운송료', '구입비용합계', '보험가입금액', '보험료']
+        money_cols = ['구입금액', '수수료', '운송료', '구입비용합계', '누적사육비', '현재원가', '보험가입금액', '보험료']
         for col in money_cols:
             df_all_cattle[col] = pd.to_numeric(df_all_cattle[col], errors='coerce')
         df_all_cattle['우방'] = pd.to_numeric(df_all_cattle['우방'], errors='coerce')
@@ -3450,6 +3458,14 @@ with tab_cattle:
                 "KPN": st.column_config.TextColumn("KPN", width="small"),
                 **date_cfg,
                 **money_cfg,
+                "누적사육비": st.column_config.NumberColumn(
+                    "누적 사육비 (원)", format="localized", alignment="right", step=1,
+                    help="지금까지 월말 정산으로 이 개체에 배분된 변동비·고정비 합계"),
+                "현재원가": st.column_config.NumberColumn(
+                    "현재원가 (원)", format="localized", alignment="right", step=1,
+                    help="구입비용합계 + 누적 사육비 (원가 반영월까지의 산입후 원가)"),
+                "원가반영월": st.column_config.TextColumn(
+                    "원가 반영월", width="small", help="마지막으로 원가가 배분된 정산 연월. 비어 있으면 아직 배분 전"),
             },
         )
 
