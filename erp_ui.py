@@ -3116,8 +3116,10 @@ with tab0:
             purchase_date = st.date_input("매입일자", key="purchase_date_input")
 
             # 선택지 이름에 남은 수량·단위를 붙여, 고른 뒤에도 칸에서 재고를 바로 볼 수 있게 한다.
-            # 주의: st.data_editor 는 넘기는 표(data)가 바뀌면 새 표로 보고 입력한 내용을 지운다.
-            # 그래서 표는 항상 같은 빈 표를 넘기고, 등록 후 비울 때는 키 버전을 올린다.
+            # 주의: 줄 추가가 되는 st.data_editor 는 넘기는 표(data)나 선택지(column_config)가 바뀌면
+            # 새 표로 보고 입력한 내용을 지운다. 왼쪽에서 품목을 새로 등록하면 선택지가 바뀌므로,
+            # 입력 중인 내용을 품목코드 기준으로 따로 저장해 두었다가(draft) 선택지가 바뀔 때 그 내용으로 표를 다시 채운다.
+            # 등록 후 표를 비울 때는 키 버전을 올리고 저장해 둔 내용도 지운다.
             purchase_name_to_code = {}
             for _, r in items_df.iterrows():
                 unit = item_units[r['item_code']]
@@ -3127,22 +3129,43 @@ with tab0:
                 purchase_name_to_code[label] = r['item_code']
             remaining_by_code = {r['item_code']: float(r['remaining']) for _, r in items_df.iterrows()}
             purchase_ver = st.session_state.setdefault("_purchase_entry_ver", 0)
+            purchase_options = list(purchase_name_to_code.keys())
+            if (st.session_state.get("_purchase_entry_opts") != purchase_options
+                    or "_purchase_entry_base" not in st.session_state):
+                code_to_label = {code: label for label, code in purchase_name_to_code.items()}
+                draft = st.session_state.get("_purchase_entry_draft", [])
+                rows = [
+                    {"품목": code_to_label.get(code), "수량": qty, "총매입금액": amt}
+                    for code, qty, amt in draft
+                    if code is None or code in code_to_label  # 그사이 삭제된 품목의 줄은 버린다
+                ]
+                rows += [{"품목": None, "수량": None, "총매입금액": None}] * max(8 - len(rows), 0)
+                st.session_state["_purchase_entry_base"] = pd.DataFrame({
+                    "품목": pd.Series([r["품목"] for r in rows], dtype="object"),
+                    "수량": pd.Series([r["수량"] for r in rows], dtype="float"),
+                    "총매입금액": pd.Series([r["총매입금액"] for r in rows], dtype="float"),
+                })
+                st.session_state["_purchase_entry_opts"] = purchase_options
             purchase_edited = st.data_editor(
-                pd.DataFrame({
-                    "품목": pd.Series([None] * 8, dtype="object"),
-                    "수량": pd.Series([None] * 8, dtype="float"),
-                    "총매입금액": pd.Series([None] * 8, dtype="float"),
-                }),
+                st.session_state["_purchase_entry_base"],
                 width="stretch",
                 hide_index=True,
                 num_rows="dynamic",
                 key=f"purchase_entry_editor_{purchase_ver}",
                 column_config={
-                    "품목": st.column_config.SelectboxColumn("품목 (남은 수량)", options=list(purchase_name_to_code.keys()), width="large"),
+                    "품목": st.column_config.SelectboxColumn("품목 (남은 수량)", options=purchase_options, width="large"),
                     "수량": st.column_config.NumberColumn("매입수량", min_value=0, format="localized", alignment="right"),
                     "총매입금액": st.column_config.NumberColumn("총매입금액 (원)", min_value=0, format="localized", alignment="right"),
                 },
             )
+            # 입력 중인 내용을 품목코드로 저장해 둔다 (품목 등록 등으로 선택지가 바뀌어도 위에서 되살린다).
+            st.session_state["_purchase_entry_draft"] = [
+                (purchase_name_to_code.get(r.품목) if pd.notna(r.품목) else None,
+                 None if pd.isna(r.수량) else float(r.수량),
+                 None if pd.isna(r.총매입금액) else float(r.총매입금액))
+                for r in purchase_edited.itertuples(index=False)
+                if pd.notna(r.품목) or pd.notna(r.수량) or pd.notna(r.총매입금액)
+            ]
             st.caption("품목 칸을 눌러 목록에서 고르고 수량·금액을 입력하세요. 빈 줄은 무시되고, 줄이 모자라면 표 아래 빈 칸을 눌러 추가합니다.")
             purchase_blank_item = purchase_edited[
                 purchase_edited["품목"].isna()
@@ -3202,6 +3225,8 @@ with tab0:
                     finally:
                         write_conn.close()
                     st.session_state["_purchase_entry_ver"] = purchase_ver + 1
+                    for k in ("_purchase_entry_draft", "_purchase_entry_base", "_purchase_entry_opts"):
+                        st.session_state.pop(k, None)
                     total_amt = sum(r[4] for r in rows_to_insert)
                     notify(f"매입 {len(rows_to_insert)}건 등록 완료! ({purchase_date.isoformat()}, 합계 {total_amt:,.0f}원)", icon="✅")
                     st.rerun()
