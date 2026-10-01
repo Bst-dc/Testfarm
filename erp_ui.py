@@ -3978,7 +3978,7 @@ with tab2:
                 st.rerun()
 
     st.markdown("---")
-    st.subheader(f"[{target_month}] 개체별 원가 적재 결과 (Cattle_Cost_Log)")
+    st.subheader(f"[{target_month}] 개체별 원가 적재 결과")
     try:
         # 누적 원가 = 구입비용합계(initial_cost) + 정산 대상 연월까지 적재된 변동비·고정비 합계
         df_log = pd.read_sql("""
