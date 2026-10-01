@@ -3469,6 +3469,88 @@ with tab_cattle:
             },
         )
 
+        # ----- 보험료 일괄 등록: 이표번호 + 보험료(+ 가입금액) 엑셀로 개체별 보험료를 채운다 -----
+        with st.expander("💰 보험료 일괄 등록 (엑셀)"):
+            st.caption("엑셀에 **이표번호**와 **보험료** 열만 있으면 됩니다 (열 이름에 '이표'·'보험료'가 들어가면 자동으로 찾습니다). "
+                       "'가입금액' 열이 있으면 보험가입금액도 함께 바꿉니다. 반영 전에 바뀌는 내용을 먼저 보여 줍니다.")
+            ins_template = pd.DataFrame({"이표번호": ["216585979 (예시)"], "가축보험 가입금액": [770], "가축보험 보험료": [255000]})
+            ins_buf = io.BytesIO()
+            with pd.ExcelWriter(ins_buf, engine="xlsxwriter") as xw:
+                ins_template.to_excel(xw, index=False, sheet_name="보험료")
+            st.download_button("보험료 엑셀 양식 내려받기", ins_buf.getvalue(), file_name="보험료_일괄등록_양식.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="ins_template_dl")
+            ins_file = st.file_uploader("보험료 엑셀 파일", type=["xlsx", "xls"], key="ins_uploader")
+            if ins_file is not None:
+                try:
+                    ins_df = pd.read_excel(ins_file, dtype=object)
+                except Exception as e:
+                    st.error(f"엑셀 파일을 읽지 못했습니다: {e}")
+                    ins_df = None
+                if ins_df is not None:
+                    ins_df.columns = [str(col).strip() for col in ins_df.columns]
+                    find_col = lambda *keys: next((col for col in ins_df.columns if any(k in col for k in keys)), None)
+                    id_col = find_col("이표", "개체번호")
+                    prem_col = find_col("보험료")
+                    val_col = find_col("가입금액")
+                    if id_col is None or prem_col is None:
+                        st.error("엑셀에서 '이표번호'와 '보험료' 열을 찾지 못했습니다. (파일 열: %s)" % ", ".join(ins_df.columns))
+                    else:
+                        def _to_number(v):
+                            if v is None or (isinstance(v, float) and pd.isna(v)):
+                                return None
+                            text = str(v).replace(",", "").replace("원", "").strip()
+                            try:
+                                return float(text) if text else None
+                            except ValueError:
+                                return None
+
+                        current = pd.read_sql("SELECT cattle_id, insurance_value, insurance_premium FROM cattle", conn)
+                        current["cattle_id"] = current["cattle_id"].astype(str).str.strip()
+                        cur_by_id = current.set_index("cattle_id")
+                        plan, unknown, bad = [], [], []
+                        for _, r in ins_df.iterrows():
+                            cid = clean_excel_text(r[id_col])
+                            if not cid or "예시" in cid:
+                                continue
+                            prem = _to_number(r[prem_col])
+                            if prem is None:
+                                bad.append(cid)
+                                continue
+                            if cid not in cur_by_id.index:
+                                unknown.append(cid)
+                                continue
+                            new_val = _to_number(r[val_col]) if val_col else None
+                            plan.append({
+                                "이표번호": cid,
+                                "현재 보험료": cur_by_id.at[cid, "insurance_premium"],
+                                "새 보험료": prem,
+                                "현재 가입금액": cur_by_id.at[cid, "insurance_value"],
+                                "새 가입금액": new_val if new_val is not None else cur_by_id.at[cid, "insurance_value"],
+                            })
+                        plan_df = pd.DataFrame(plan)
+                        st.info(f"반영할 개체 **{len(plan_df):,}두** · 보험료 합계 **{plan_df['새 보험료'].sum() if len(plan_df) else 0:,.0f}원**"
+                                + (f" · 등록되지 않은 이표번호 {len(unknown)}건" if unknown else "")
+                                + (f" · 보험료가 비었거나 숫자가 아닌 줄 {len(bad)}건" if bad else ""))
+                        if unknown:
+                            st.warning("이 농장에 없는 이표번호 (반영하지 않음): " + ", ".join(unknown[:30]) + (" …" if len(unknown) > 30 else ""))
+                        if len(plan_df):
+                            ins_money = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right", step=1)
+                            farm_dataframe(plan_df, width="stretch", hide_index=True, column_config={
+                                "현재 보험료": ins_money("현재 보험료 (원)"), "새 보험료": ins_money("새 보험료 (원)"),
+                                "현재 가입금액": ins_money("현재 가입금액"), "새 가입금액": ins_money("새 가입금액"),
+                            })
+                            if st.button(f"보험료 {len(plan_df):,}두 반영", type="primary", width="stretch", key="ins_apply_btn"):
+                                wc = db_connect(DB_FILE)
+                                try:
+                                    for p_ in plan:
+                                        wc.execute("UPDATE cattle SET insurance_premium = ?, insurance_value = ? WHERE cattle_id = ?",
+                                                   (p_["새 보험료"], p_["새 가입금액"], p_["이표번호"]))
+                                    wc.commit()
+                                finally:
+                                    wc.close()
+                                notify(f"보험료 {len(plan):,}두 반영 완료 (합계 {plan_df['새 보험료'].sum():,.0f}원)", icon="✅")
+                                st.rerun()
+
         selected_move_rows = edited_all_cattle_df[edited_all_cattle_df["선택"]]
         if not selected_move_rows.empty:
             st.markdown("---")
