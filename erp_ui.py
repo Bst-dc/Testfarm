@@ -328,18 +328,22 @@ def show_pending_toasts():
         st.toast(message, icon=icon)
 
 
-def settlement_month_input(conn, table, label, key, view_key):
+def settlement_month_input(conn, tables, label, key, view_keys):
     """등록 폼 위의 '정산연월' 입력칸. 폼 밖에 두어야 값을 바꾸는 즉시 화면이 다시 그려지고,
-    그때 아래 등록 내역 표의 조회 연월(view_key)과 월말 정산 대상 연월도 같은 달로 맞춘다.
+    그때 아래 등록 내역 표들의 조회 연월(view_keys)과 월말 정산 대상 연월도 같은 달로 맞춘다.
     처음에는 내역이 있는 가장 최근 달(없으면 이번 달)로 시작해 아래 표와 맞춘다."""
     if key not in st.session_state:
-        latest = conn.execute(f"SELECT MAX(settlement_month) FROM {table}").fetchone()[0]
-        st.session_state[key] = st.session_state.get(view_key) or latest or datetime.now().strftime('%Y-%m')
+        latest = max(
+            (m for m in (conn.execute(f"SELECT MAX(settlement_month) FROM {t}").fetchone()[0] for t in tables) if m),
+            default=None,
+        )
+        st.session_state[key] = latest or datetime.now().strftime('%Y-%m')
 
     def _sync():
         month = str(st.session_state[key]).strip()
         if re.fullmatch(r"\d{4}-\d{2}", month):
-            st.session_state[view_key] = month
+            for view_key in view_keys:
+                st.session_state[view_key] = month
             st.session_state["calc_target_month"] = month
 
     return st.text_input(label, key=key, on_change=_sync, help="형식: YYYY-MM")
@@ -3322,7 +3326,15 @@ with tab0:
 with tab2:
     st.subheader("월말 비용 등록 및 조회")
     st.markdown("월말에 재고 조사 후, 시험군별 품목 사용량과 농장 고정비를 등록합니다.")
-    
+
+    # 정산연월은 사용량·고정비 등록이 함께 쓴다. 바꾸면 두 등록 내역의 조회 연월과 정산 대상 연월도 같은 달로 맞춘다.
+    month_col, _ = st.columns([1, 3])
+    with month_col:
+        cost_month = settlement_month_input(
+            conn, ("monthly_usage", "monthly_fixedcost"), "정산연월 (사용량·고정비 공통)",
+            "cost_month_input", ("usage_view_month", "fc_view_month"),
+        )
+
     col_c, col_d = st.columns(2)
     
     with col_c:
@@ -3348,8 +3360,7 @@ with tab2:
         else:
             group_options = {f"{r['test_name']} ({r['test_group_code']})": r['test_group_code'] for _, r in groups_df.iterrows()}
             
-            # 정산연월은 폼 밖에 두어 등록 후에도 그대로 유지되고, 바꾸면 아래 내역도 그 달로 바뀐다.
-            usage_month = settlement_month_input(conn, "monthly_usage", "정산연월", "usage_month_input", "usage_view_month")
+            usage_month = cost_month  # 탭 맨 위의 공통 정산연월
 
             usage_group_label = st.selectbox("시험군", list(group_options.keys()), key="usage_group_sel")
 
@@ -3471,7 +3482,7 @@ with tab2:
         st.markdown("---")
         st.markdown("##### 등록된 사용 내역")
         usage_view_month = month_view_select(conn, "monthly_usage", "usage_view_month",
-                                             st.session_state.get("usage_month_input") or datetime.now().strftime('%Y-%m'))
+                                             st.session_state.get("cost_month_input") or datetime.now().strftime('%Y-%m'))
         df_usage = pd.read_sql("""
             SELECT u.usage_id as ID, u.settlement_month as 정산연월,
                    t.test_name as 시험군, i.item_name as 품목명,
@@ -3553,7 +3564,7 @@ with tab2:
     with col_d:
         st.markdown("##### ⚡ 농장 고정비 등록")
 
-        fc_month = settlement_month_input(conn, "monthly_fixedcost", "정산연월 ", "fc_month_input", "fc_view_month")
+        fc_month = cost_month  # 탭 맨 위의 공통 정산연월
 
         # 여러 지출 항목을 한 번에 등록한다. 금액 칸은 천단위 콤마로 표시된다.
         fc_items = ["인건비", "전기세", "시험사양수고비", "CCTV사용료", "우수등급장려금", "가축보험료", "기타"]
@@ -3591,7 +3602,7 @@ with tab2:
         st.markdown("---")
         st.markdown("##### 등록된 고정비 내역 (체크박스로 삭제 가능)")
         fc_view_month = month_view_select(conn, "monthly_fixedcost", "fc_view_month",
-                                          st.session_state["fc_month_input"])
+                                          st.session_state["cost_month_input"])
         df_fixed = pd.read_sql("""
             SELECT fixed_cost_id as ID, settlement_month as 정산연월,
                    expense_item as 지출항목, total_billed_amount as 총청구금액
@@ -3653,7 +3664,7 @@ with tab2:
     
     # 정산 대상 연월은 비용(사용량·고정비)이 등록됐거나 이미 정산된 연월 중에서 고른다.
     # 직접 입력하게 두면 비용이 없는 달(예: 이번 달)이 그대로 정산되는 실수가 생긴다.
-    # 위 등록 폼의 정산연월을 바꾸면 여기 값도 따라 바뀐다(settlement_month_input). 처음에는 사용량 등록 연월로 시작.
+    # 위 공통 정산연월을 바꾸면 여기 값도 따라 바뀐다(settlement_month_input). 처음에는 그 정산연월로 시작.
     calc_months = sorted({r[0] for r in conn.execute("""
         SELECT settlement_month FROM monthly_usage
         UNION SELECT settlement_month FROM monthly_fixedcost
@@ -3665,7 +3676,7 @@ with tab2:
         calc_months = [datetime.now().strftime('%Y-%m')]
     settled_months_set = {r[0] for r in conn.execute("SELECT DISTINCT settlement_month FROM cattle_cost_log").fetchall()}
     if "calc_target_month" not in st.session_state:
-        start_month = st.session_state.get("usage_month_input")
+        start_month = st.session_state.get("cost_month_input")
         st.session_state["calc_target_month"] = start_month if start_month in calc_months else calc_months[0]
     elif st.session_state["calc_target_month"] not in calc_months:
         # 위에서 비용이 없는 달로 바꾼 경우: 선택지에 없으니 가장 최근 등록 연월로 둔다.
