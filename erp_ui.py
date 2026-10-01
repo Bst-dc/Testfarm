@@ -3515,11 +3515,17 @@ with tab2:
                 total_days = sum(sel_days.values())
                 if total_days > 0:
                     usage_group_ratios = {g: d / total_days for g, d in sel_days.items() if d > 0}
+                # 현재 사육두수: 지금 상태가 '사육'인 개체 수 (비율 계산에는 쓰지 않고 참고로 보여 준다)
+                current_heads = dict(conn.execute(
+                    "SELECT test_group_code, COUNT(*) FROM cattle WHERE status = '사육' GROUP BY test_group_code"
+                ).fetchall())
                 st.dataframe(
-                    pd.DataFrame([{"시험군": group_name_of.get(g, g), "사육일수 (두수×일수)": d,
-                                   "비율": (d / total_days if total_days > 0 else 0.0)} for g, d in sel_days.items()]),
+                    pd.DataFrame([{"시험군": group_name_of.get(g, g), "현재 사육두수": int(current_heads.get(g, 0)),
+                                   "사육일수 (두수×일수)": d, "비율": (d / total_days if total_days > 0 else 0.0)}
+                                  for g, d in sel_days.items()]),
                     width="stretch", hide_index=True,
                     column_config={
+                        "현재 사육두수": st.column_config.NumberColumn("현재 사육두수 (두)", format="localized", alignment="right"),
                         "사육일수 (두수×일수)": st.column_config.NumberColumn(format="localized", alignment="right"),
                         "비율": st.column_config.NumberColumn(format="percent", alignment="right"),
                     },
