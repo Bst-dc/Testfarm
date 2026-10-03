@@ -2840,7 +2840,7 @@ with tab_cattle:
 
         with col_reg2:
             st.subheader("🐂 개체 입식 등록")
-            st.caption("개체를 한 마리씩 등록하거나, 엑셀 파일을 통해 일괄 등록할 수 있습니다.")
+            st.caption("표에 여러 마리를 한꺼번에 입력해 등록하거나, 엑셀 파일을 통해 일괄 등록할 수 있습니다.")
             
             groups_for_cattle = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master", conn)
             if groups_for_cattle.empty:
@@ -3091,74 +3091,134 @@ with tab_cattle:
                             st.error(f"엑셀 파일 읽기 오류: {e}")
                 
                 st.markdown("---")
-                with st.form("add_cattle_form", clear_on_submit=True):
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        new_cattle_id = st.text_input("이표번호 (개체번호)", placeholder="예: 216585979")
-                    with c2:
-                        new_kpn = st.text_input("KPN", placeholder="예: 1654")
-                    
-                    c3, c4 = st.columns(2)
-                    with c3:
-                        new_birth_date = st.date_input("생년월일")
-                    with c4:
-                        new_admission_date = st.date_input("입식일 (구입일)")
-                    
-                    c5, c6 = st.columns(2)
-                    with c5:
-                        new_cattle_group = st.selectbox("소속 시험군", list(cattle_group_opts.keys()))
-                    with c6:
-                        new_market = st.text_input("우시장", placeholder="예: 순정축협(정읍)")
-                    
-                    c7, c8 = st.columns(2)
-                    with c7:
-                        new_building = st.selectbox("동", [f"{i}동" for i in range(1, 7)])
-                    with c8:
-                        new_pen = st.number_input("칸번호", min_value=1, max_value=20, value=1, help="우방(칸) 번호")
+                st.markdown("**✍️ 직접 입력 (여러 마리 한꺼번에 등록)**")
+                # 같은 날 같은 시장에서 들여온 개체를 한꺼번에 넣으므로, 시험군·입식일·우시장은 한 번만 고르고
+                # 표에 줄마다 개체별 내용을 넣어 한 번에 등록한다 (품목 매입 등록과 같은 방식).
+                manual_group_opts = {k: v for k, v in cattle_group_opts.items() if v != "AUTO"}
+                m1, m2, m3 = st.columns(3)
+                with m1:
+                    new_cattle_group = st.selectbox("기본 시험군", list(manual_group_opts.keys()), key="manual_cattle_group")
+                with m2:
+                    new_admission_date = st.date_input("기본 입식일 (구입일)", key="manual_admission_date",
+                                                       help="표에서 입식일을 비워 둔 줄에 적용됩니다. 줄마다 따로 입력하면 그 값이 우선합니다.")
+                with m3:
+                    new_market = st.text_input("기본 우시장", placeholder="예: 순정축협(정읍)", key="manual_market",
+                                               help="표에서 우시장을 비워 둔 줄에 적용됩니다. 줄마다 따로 입력하면 그 값이 우선합니다.")
 
-                    c9, c10 = st.columns(2)
-                    with c9:
-                        new_feed_type = st.selectbox("사료구분", ["표준", "증량형", "제한형"])
-                    with c10:
-                        new_roughage = st.selectbox("조사료등급", ["표준", "고급", "저급"])
+                cattle_entry_ver = st.session_state.setdefault("_cattle_entry_ver", 0)
+                # 주의: 줄 추가가 되는 st.data_editor 는 넘기는 표가 바뀌면 입력한 내용을 지우므로,
+                # 기본 표는 세션에 한 번만 만들어 두고 등록 후에만 키 버전을 올려 비운다.
+                if "_cattle_entry_base" not in st.session_state:
+                    n_blank = 8
+                    text_cols = ["이표번호", "시험군", "KPN", "생년월일", "입식일", "우시장", "동", "사료구분", "조사료등급", "거세일"]
+                    num_cols = ["칸", "송아지 구입금액", "수수료", "운송료", "보험 가입금액", "보험료"]
+                    blank = {c: pd.Series([None] * n_blank, dtype="object") for c in text_cols}
+                    blank.update({c: pd.Series([None] * n_blank, dtype="float") for c in num_cols})
+                    st.session_state["_cattle_entry_base"] = pd.DataFrame(blank)[
+                        ["이표번호", "시험군", "KPN", "생년월일", "입식일", "우시장", "동", "칸", "사료구분", "조사료등급", "거세일",
+                         "송아지 구입금액", "수수료", "운송료", "보험 가입금액", "보험료"]
+                    ]
+                cattle_edited = farm_data_editor(
+                    st.session_state["_cattle_entry_base"],
+                    placeholder="",
+                    width="stretch",
+                    hide_index=True,
+                    num_rows="dynamic",
+                    key=f"cattle_entry_editor_{cattle_entry_ver}",
+                    column_config={
+                        "이표번호": st.column_config.TextColumn("이표번호 (개체번호)", width="medium"),
+                        "시험군": st.column_config.SelectboxColumn("시험군 (비우면 기본값)", options=list(manual_group_opts.keys()), width="medium"),
+                        "KPN": st.column_config.TextColumn("KPN", width="small"),
+                        "생년월일": st.column_config.DateColumn("생년월일", format="YYYY-MM-DD"),
+                        "입식일": st.column_config.DateColumn("입식일 (비우면 기본값)", format="YYYY-MM-DD"),
+                        "우시장": st.column_config.TextColumn("우시장 (비우면 기본값)", width="medium"),
+                        "동": st.column_config.SelectboxColumn("동", options=[f"{i}동" for i in range(1, 7)], width="small"),
+                        "칸": st.column_config.NumberColumn("칸번호", min_value=1, max_value=20, step=1, format="%d", width="small"),
+                        "사료구분": st.column_config.SelectboxColumn("사료구분", options=["표준", "증량형", "제한형"], default="표준", width="small"),
+                        "조사료등급": st.column_config.SelectboxColumn("조사료등급", options=["표준", "고급", "저급"], default="표준", width="small"),
+                        "거세일": st.column_config.DateColumn("거세일", format="YYYY-MM-DD"),
+                        "송아지 구입금액": st.column_config.NumberColumn("송아지 구입금액 (원)", min_value=0, format="localized", alignment="right"),
+                        "수수료": st.column_config.NumberColumn("수수료 (원)", min_value=0, default=30000, format="localized", alignment="right"),
+                        "운송료": st.column_config.NumberColumn("운송료 (원)", min_value=0, default=0, format="localized", alignment="right"),
+                        "보험 가입금액": st.column_config.NumberColumn("보험 가입금액 (만원)", min_value=0, format="localized", alignment="right"),
+                        "보험료": st.column_config.NumberColumn("보험료 (원)", min_value=0, format="localized", alignment="right"),
+                    },
+                )
+                st.caption("이표번호를 입력한 줄만 등록됩니다. 줄이 모자라면 표 아래 빈 칸을 눌러 추가하세요. (새 줄의 수수료는 30,000원, 사료구분·조사료등급은 '표준'이 기본값)")
 
-                    new_castration = st.date_input("거세일")
-                    
-                    st.markdown("**입식 비용 내역**")
-                    new_calf_price = st.number_input("송아지 구입금액 (원)", min_value=0, step=100000, value=5000000)
-                    cc2, cc3 = st.columns(2)
-                    with cc2:
-                        new_commission = st.number_input("수수료 (원)", min_value=0, step=10000, value=30000)
-                    with cc3:
-                        new_transport = st.number_input("운송료 (원)", min_value=0, step=10000, value=0)
-                    
-                    st.markdown("**가축보험 정보**")
-                    ci1, ci2 = st.columns(2)
-                    with ci1:
-                        new_ins_value = st.number_input("가입금액 (만원)", min_value=0, step=10, value=770)
-                    with ci2:
-                        new_ins_premium = st.number_input("보험료 (원)", min_value=0, step=1000, value=0)
-                    
-                    submitted_cattle = st.form_submit_button("개체 입식 등록", type="primary", width="stretch")
+                def _cell(v):
+                    return None if pd.isna(v) else v
 
-                    if submitted_cattle:
-                        if new_cattle_id:
-                            total_init_cost = new_calf_price + new_commission + new_transport
-                            sel_group_code = cattle_group_opts[new_cattle_group]
-                            try:
-                                wc = db_connect(DB_FILE)
-                                wc.execute(
-                                    "INSERT INTO cattle (cattle_id, kpn, birth_date, test_group_code, status, admission_date, market_name, building, pen_number, feed_type, roughage_grade, castration_date, calf_price, commission_fee, transport_fee, initial_cost, insurance_value, insurance_premium) VALUES (?,?,?,?,'사육',?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                                    (new_cattle_id, new_kpn, new_birth_date.isoformat(), sel_group_code, new_admission_date.isoformat(), new_market, new_building, new_pen, new_feed_type, new_roughage, new_castration.isoformat(), new_calf_price, new_commission, new_transport, total_init_cost, new_ins_value, new_ins_premium)
-                                )
-                                wc.commit(); wc.close()
-                                notify(f"개체 '{new_cattle_id}' 입식 등록 완료! (구입비용합계: {total_init_cost:,}원)", icon="✅")
-                                st.rerun()
-                            except sqlite3.IntegrityError:
-                                wc.rollback(); wc.close()
-                                st.error("이미 등록된 이표번호입니다.")
-                        else:
-                            st.warning("이표번호를 입력하세요.")
+                def _cell_date(v):
+                    v = _cell(v)
+                    if v is None:
+                        return None
+                    return v.strftime("%Y-%m-%d") if hasattr(v, "strftime") else str(v)[:10]
+
+                def _cell_num(v, default=0):
+                    v = _cell(v)
+                    return default if v is None else float(v)
+
+                entry_existing = set(
+                    pd.read_sql("SELECT cattle_id FROM cattle", conn)["cattle_id"].astype(str).str.strip()
+                )
+                cattle_rows, cattle_problems, entry_seen = [], [], set()
+                for r in cattle_edited.to_dict("records"):
+                    cid = clean_excel_text(_cell(r["이표번호"]))
+                    if not cid:
+                        if any(pd.notna(v) for k, v in r.items() if k != "이표번호"):
+                            cattle_problems.append("이표번호 없이 다른 값만 입력된 줄이 있습니다.")
+                        continue
+                    if cid in entry_existing:
+                        cattle_problems.append(f"{cid}: 이미 등록된 이표번호입니다.")
+                        continue
+                    if cid in entry_seen:
+                        cattle_problems.append(f"{cid}: 표 안에 같은 이표번호가 두 번 있습니다.")
+                        continue
+                    entry_seen.add(cid)
+                    calf_p, comm_f, trans_f = _cell_num(r["송아지 구입금액"]), _cell_num(r["수수료"]), _cell_num(r["운송료"])
+                    pen = _cell(r["칸"])
+                    cattle_rows.append((
+                        cid, clean_excel_text(_cell(r["KPN"])), _cell_date(r["생년월일"]),
+                        manual_group_opts[_cell(r["시험군"]) or new_cattle_group],
+                        _cell_date(r["입식일"]) or new_admission_date.isoformat(),
+                        clean_excel_text(_cell(r["우시장"])) or new_market, _cell(r["동"]),
+                        None if pen is None else int(pen),
+                        _cell(r["사료구분"]) or "표준", _cell(r["조사료등급"]) or "표준", _cell_date(r["거세일"]),
+                        calf_p, comm_f, trans_f, calf_p + comm_f + trans_f,
+                        _cell_num(r["보험 가입금액"], None), _cell_num(r["보험료"], None),
+                    ))
+
+                if cattle_rows:
+                    show_table_total(len(cattle_rows), "구입비용 합계", sum(x[14] for x in cattle_rows))
+
+                if st.button("개체 입식 일괄 등록", type="primary", width="stretch", key="submit_cattle_btn"):
+                    if cattle_problems:
+                        st.warning("등록하지 않았습니다. 아래 내용을 확인하세요.\n\n" + "\n".join(f"- {p}" for p in dict.fromkeys(cattle_problems)))
+                    elif not cattle_rows:
+                        st.warning("이표번호를 입력한 줄이 없습니다.")
+                    else:
+                        # 한 트랜잭션으로 넣어 일부만 들어가는 일이 없게 한다.
+                        write_conn = db_connect(DB_FILE)
+                        saved = False
+                        try:
+                            write_conn.executemany(
+                                "INSERT INTO cattle (cattle_id, kpn, birth_date, test_group_code, status, admission_date, market_name, building, pen_number, feed_type, roughage_grade, castration_date, calf_price, commission_fee, transport_fee, initial_cost, insurance_value, insurance_premium) VALUES (?,?,?,?,'사육',?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                cattle_rows,
+                            )
+                            write_conn.commit()
+                            saved = True
+                        except sqlite3.IntegrityError as e:
+                            write_conn.rollback()
+                            st.error(f"등록하지 못했습니다 (한 건도 저장되지 않음): {e}")
+                        finally:
+                            write_conn.close()
+                        if saved:
+                            st.session_state["_cattle_entry_ver"] = cattle_entry_ver + 1
+                            st.session_state.pop("_cattle_entry_base", None)
+                            total_cost = sum(x[14] for x in cattle_rows)
+                            notify(f"개체 {len(cattle_rows)}마리 입식 등록 완료! (구입비용합계: {total_cost:,.0f}원)", icon="✅")
+                            st.rerun()
 
     
     with sub_tab2:
