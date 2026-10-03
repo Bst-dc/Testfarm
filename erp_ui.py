@@ -3845,66 +3845,71 @@ with tab1:
         )
 
 with tab0:
-    col_left, col_right = st.columns(2)
-    
-    with col_left:
-        st.subheader("📋 품목 등록")
-        st.caption("사료, 조사료, 약품 등 새 품목을 등록합니다.")
+    # 한 화면에 등록·내역·재고·품목이 몰려 있어 길고 복잡했으므로, 개체 관리 탭처럼 하위 탭으로 나눈다.
+    sub_pur_entry, sub_pur_hist, sub_stock, sub_items = st.tabs(["🚚 매입 등록", "📋 매입 내역", "📦 재고 현황", "🏷️ 품목 관리"])
+
+    with sub_items:
+        col_item_form, col_item_list = st.columns([1, 2])
+        with col_item_form:
+            st.subheader("📋 품목 등록")
+            st.caption("사료, 조사료, 약품 등 새 품목을 등록합니다.")
         
-        # 품목코드 자동 채번 로직
-        df_existing_items = pd.read_sql("SELECT item_code FROM item_master", conn)
-        max_item_num = 0
-        for code in df_existing_items['item_code']:
-            digits = ''.join(filter(str.isdigit, str(code)))
-            if digits:
-                max_item_num = max(max_item_num, int(digits))
-        next_item_code = f"ITEM{max_item_num + 1}"
+            # 품목코드 자동 채번 로직
+            df_existing_items = pd.read_sql("SELECT item_code FROM item_master", conn)
+            max_item_num = 0
+            for code in df_existing_items['item_code']:
+                digits = ''.join(filter(str.isdigit, str(code)))
+                if digits:
+                    max_item_num = max(max_item_num, int(digits))
+            next_item_code = f"ITEM{max_item_num + 1}"
 
-        with st.form("add_item_form", clear_on_submit=True):
-            st.text_input("품목코드 (자동부여)", value=next_item_code, disabled=True)
-            new_item_name = st.text_input("품목명", placeholder="예: TMR사료")
-            new_item_category = st.selectbox("분류", ["사료", "조사료", "약품", "기타저장품"])
-            new_item_unit = st.selectbox("단위", ["kg", "ml", "개"])
-            submitted_item = st.form_submit_button("품목 등록", type="primary", width="stretch")
-            if submitted_item:
-                new_item_name = new_item_name.strip()
-                if new_item_name:
-                    write_conn = db_connect(DB_FILE)
-                    # 같은 품목을 두 번 등록하면 매입·사용량이 둘로 나뉘어 재고와 단가가 어긋난다.
-                    existing = pd.read_sql("SELECT item_code AS 품목코드, item_name AS 품목명, category AS 분류, unit AS 단위 FROM item_master", write_conn)
-                    dup = existing[existing["품목명"].map(normalize_item_name) == normalize_item_name(new_item_name)]
-                    if not dup.empty:
-                        write_conn.close()
-                        st.session_state["_dup_item_alert"] = (
-                            f"'{new_item_name}' 은(는) 이미 등록된 품목입니다. 등록하지 않았습니다.", dup)
-                    else:
-                        try:
-                            # 제출 시점에 한 번 더 최신 코드를 확인하여 동시 접속 시 충돌 방지
-                            m_num = 0
-                            for c in existing["품목코드"]:
-                                d = ''.join(filter(str.isdigit, str(c)))
-                                if d: m_num = max(m_num, int(d))
-                            final_item_code = f"ITEM{m_num + 1}"
-
-                            write_conn.execute(
-                                "INSERT INTO item_master (item_code, item_name, category, unit, current_stock, moving_avg_price) VALUES (?, ?, ?, ?, 0, 0)",
-                                (final_item_code, new_item_name, new_item_category, new_item_unit)
-                            )
-                            write_conn.commit()
+            with st.form("add_item_form", clear_on_submit=True):
+                st.text_input("품목코드 (자동부여)", value=next_item_code, disabled=True)
+                new_item_name = st.text_input("품목명", placeholder="예: TMR사료")
+                new_item_category = st.selectbox("분류", ["사료", "조사료", "약품", "기타저장품"])
+                new_item_unit = st.selectbox("단위", ["kg", "ml", "개"])
+                submitted_item = st.form_submit_button("품목 등록", type="primary", width="stretch")
+                if submitted_item:
+                    new_item_name = new_item_name.strip()
+                    if new_item_name:
+                        write_conn = db_connect(DB_FILE)
+                        # 같은 품목을 두 번 등록하면 매입·사용량이 둘로 나뉘어 재고와 단가가 어긋난다.
+                        existing = pd.read_sql("SELECT item_code AS 품목코드, item_name AS 품목명, category AS 분류, unit AS 단위 FROM item_master", write_conn)
+                        dup = existing[existing["품목명"].map(normalize_item_name) == normalize_item_name(new_item_name)]
+                        if not dup.empty:
                             write_conn.close()
-                            notify(f"품목 '{new_item_name}' ({final_item_code})이 등록되었습니다.", icon="✅")
-                            st.rerun()
-                        except sqlite3.IntegrityError as e:
-                            write_conn.rollback(); write_conn.close()
-                            st.error(f"품목 등록 중 오류가 발생했습니다: {e}")
-                else:
-                    st.warning("품목명을 입력하세요.")
+                            st.session_state["_dup_item_alert"] = (
+                                f"'{new_item_name}' 은(는) 이미 등록된 품목입니다. 등록하지 않았습니다.", dup)
+                        else:
+                            try:
+                                # 제출 시점에 한 번 더 최신 코드를 확인하여 동시 접속 시 충돌 방지
+                                m_num = 0
+                                for c in existing["품목코드"]:
+                                    d = ''.join(filter(str.isdigit, str(c)))
+                                    if d: m_num = max(m_num, int(d))
+                                final_item_code = f"ITEM{m_num + 1}"
 
-        # 중복 경고 팝업은 폼 밖에서 띄운다 (폼 안에서는 대화상자를 열 수 없다).
-        if "_dup_item_alert" in st.session_state:
-            duplicate_item_dialog(*st.session_state.pop("_dup_item_alert"))
+                                write_conn.execute(
+                                    "INSERT INTO item_master (item_code, item_name, category, unit, current_stock, moving_avg_price) VALUES (?, ?, ?, ?, 0, 0)",
+                                    (final_item_code, new_item_name, new_item_category, new_item_unit)
+                                )
+                                write_conn.commit()
+                                write_conn.close()
+                                notify(f"품목 '{new_item_name}' ({final_item_code})이 등록되었습니다.", icon="✅")
+                                st.rerun()
+                            except sqlite3.IntegrityError as e:
+                                write_conn.rollback(); write_conn.close()
+                                st.error(f"품목 등록 중 오류가 발생했습니다: {e}")
+                    else:
+                        st.warning("품목명을 입력하세요.")
 
-        with st.expander("📋 등록된 품목 목록 · 수정 / 삭제 (체크박스로 삭제)"):
+            # 중복 경고 팝업은 폼 밖에서 띄운다 (폼 안에서는 대화상자를 열 수 없다).
+            if "_dup_item_alert" in st.session_state:
+                duplicate_item_dialog(*st.session_state.pop("_dup_item_alert"))
+
+        with col_item_list:
+            st.subheader("📋 등록된 품목 · 수정 / 삭제")
+            st.caption("품목명·분류·단위를 표에서 바로 고치고, 지울 품목은 '삭제'에 체크한 뒤 저장하세요.")
             df_items_all = pd.read_sql("SELECT item_code as 품목코드, item_name as 품목명, category as 분류, unit as 단위, current_stock as 현재재고, moving_avg_price as 이동평균단가 FROM item_master", conn)
             df_items_all.insert(0, "삭제", False)
 
@@ -3960,8 +3965,8 @@ with tab0:
 
                     save_with_delete_confirm("품목", item_changed, item_deleted, edited_item_df.iloc[0:0],
                                              ["품목코드", "품목명", "분류", "단위", "현재재고"], None, _save_items)
-    
-    with col_right:
+
+    with sub_pur_entry:
         st.subheader("🚚 매입(입고) 등록")
         st.caption("사료·조사료·약품을 매입하면 재고와 이동평균단가가 자동 갱신됩니다.")
         
@@ -3973,7 +3978,7 @@ with tab0:
             FROM item_master i
         """, conn)
         if items_df.empty:
-            st.info("먼저 좌측에서 품목을 등록해 주세요.")
+            st.info("먼저 '🏷️ 품목 관리' 탭에서 품목을 등록해 주세요.")
         else:
             item_units = {r['item_code']: (r['unit'] if pd.notna(r['unit']) else "") for _, r in items_df.iterrows()}
 
@@ -3983,7 +3988,7 @@ with tab0:
 
             # 선택지 이름에 남은 수량·단위를 붙여, 고른 뒤에도 칸에서 재고를 바로 볼 수 있게 한다.
             # 주의: 줄 추가가 되는 st.data_editor 는 넘기는 표(data)나 선택지(column_config)가 바뀌면
-            # 새 표로 보고 입력한 내용을 지운다. 왼쪽에서 품목을 새로 등록하면 선택지가 바뀌므로,
+            # 새 표로 보고 입력한 내용을 지운다. 품목 관리 탭에서 품목을 새로 등록하면 선택지가 바뀌므로,
             # 입력 중인 내용을 품목코드 기준으로 따로 저장해 두었다가(draft) 선택지가 바뀔 때 그 내용으로 표를 다시 채운다.
             # 등록 후 표를 비울 때는 키 버전을 올리고 저장해 둔 내용도 지운다.
             purchase_name_to_code = {}
@@ -4098,160 +4103,207 @@ with tab0:
                     notify(f"매입 {len(rows_to_insert)}건 등록 완료! ({purchase_date.isoformat()}, 합계 {total_amt:,.0f}원)", icon="✅")
                     st.rerun()
 
-            # ----- 품목 현황 -----
-            # 고른 매입일자가 속한 달의 매입 품목은 바로 보이게 두고,
-            # 월말정산 후 남은 품목과 전체 매입 품목은 접어 두었다가 펼쳐서 본다.
-            num = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right",
-                                                          step=1 if "(원)" in label else None)
-            purchase_month = purchase_date.strftime("%Y-%m")
-            month_df = pd.read_sql("""
-                SELECT i.item_name AS 품목명, i.category AS 분류, COUNT(*) AS 매입건수,
-                       SUM(p.quantity) AS 매입수량, MAX(i.unit) AS 단위, SUM(p.total_amount) AS 매입금액
-                FROM purchase p
-                JOIN item_master i ON p.item_code = i.item_code
-                WHERE substr(p.purchase_date, 1, 7) = ?
-                GROUP BY p.item_code, i.item_name, i.category
-                ORDER BY i.category, i.item_name
-            """, conn, params=(purchase_month,))
-            st.markdown(f"##### 📅 {purchase_month} 매입 품목")
-            if month_df.empty:
-                st.caption(f"{purchase_month}에 매입한 품목이 없습니다. (위 매입일자를 바꾸면 그 달의 매입 품목을 보여 줍니다)")
-            else:
-                month_df["평균단가"] = (month_df["매입금액"] / month_df["매입수량"].where(month_df["매입수량"] != 0)).round(0)
+    with sub_pur_hist:
+        st.subheader("📋 매입 내역")
+        st.caption("월·분류·품목명으로 걸러 봅니다. 표에서 바로 고치거나 '삭제'에 체크한 뒤 저장하면 재고와 평균단가가 다시 계산됩니다.")
+        df_purchase_all = pd.read_sql("""
+            SELECT p.purchase_id as 매입ID, p.purchase_date as 매입일자,
+                   p.item_code as 품목코드, i.item_name as 품목명, i.category as 분류,
+                   p.quantity as 수량, p.unit as 단위, p.total_amount as 총금액
+            FROM purchase p
+            JOIN item_master i ON p.item_code = i.item_code
+            ORDER BY p.purchase_date DESC, p.purchase_id DESC
+        """, conn)
+        hist_items = pd.read_sql("SELECT item_code, item_name, unit FROM item_master ORDER BY category, item_name", conn)
+        hist_name_to_code = dict(zip(hist_items["item_name"], hist_items["item_code"]))
+        hist_unit_by_code = dict(zip(hist_items["item_code"], hist_items["unit"]))
+
+        pur_months = sorted({str(d)[:7] for d in df_purchase_all["매입일자"].dropna()}, reverse=True)
+        this_month = datetime.now().strftime("%Y-%m")
+        hist_month_opts = ["(전체)"] + pur_months
+        default_month = this_month if this_month in pur_months else (pur_months[0] if pur_months else "(전체)")
+        hf1, hf2, hf3 = st.columns([1, 1, 2])
+        with hf1:
+            hist_month = st.selectbox("📅 매입 월", hist_month_opts, index=hist_month_opts.index(default_month), key="pur_hist_month")
+        with hf2:
+            hist_cat = st.selectbox("🏷️ 분류", ["(전체)", "사료", "조사료", "약품", "기타저장품"], key="pur_hist_cat")
+        with hf3:
+            hist_search = st.text_input("🔎 품목명 검색", placeholder="품목명의 일부를 입력하세요", key="pur_hist_search")
+
+        df_purchase = df_purchase_all
+        if hist_month != "(전체)":
+            df_purchase = df_purchase[df_purchase["매입일자"].astype(str).str[:7] == hist_month]
+        if hist_cat != "(전체)":
+            df_purchase = df_purchase[df_purchase["분류"] == hist_cat]
+        if hist_search.strip():
+            df_purchase = df_purchase[df_purchase["품목명"].astype(str).str.contains(hist_search.strip(), regex=False)]
+        df_purchase = df_purchase.reset_index(drop=True)
+
+        hm1, hm2, hm3 = st.columns(3)
+        hm1.metric("매입 건수", f"{len(df_purchase):,}건")
+        hm2.metric("품목 수", f"{df_purchase['품목코드'].nunique():,}개")
+        hm3.metric("매입 금액", f"{pd.to_numeric(df_purchase['총금액'], errors='coerce').fillna(0).sum():,.0f}원")
+
+        if not df_purchase.empty:
+            with st.expander("품목별 합계 보기"):
+                by_item = (df_purchase.groupby(["품목명", "분류"], as_index=False)
+                           .agg(매입건수=("매입ID", "count"), 매입수량=("수량", "sum"), 단위=("단위", "first"), 매입금액=("총금액", "sum"))
+                           .sort_values(["분류", "품목명"]))
+                by_item["평균단가"] = (by_item["매입금액"] / by_item["매입수량"].where(by_item["매입수량"] != 0)).round(0)
                 farm_dataframe(
-                    month_df[["품목명", "분류", "매입건수", "매입수량", "단위", "평균단가", "매입금액"]],
+                    by_item[["품목명", "분류", "매입건수", "매입수량", "단위", "평균단가", "매입금액"]],
                     width="stretch", hide_index=True,
                     column_config={
                         "매입건수": st.column_config.NumberColumn(width="small"),
-                        "매입수량": num("매입수량"), "평균단가": num("평균단가 (원)"), "매입금액": num("매입금액 (원)"),
+                        "매입수량": st.column_config.NumberColumn(format="localized", alignment="right"),
+                        "평균단가": st.column_config.NumberColumn("평균단가 (원)", format="localized", alignment="right", step=1),
+                        "매입금액": st.column_config.NumberColumn("매입금액 (원)", format="localized", alignment="right", step=1),
                     },
                 )
-                show_table_total(len(month_df), "매입금액", float(month_df["매입금액"].sum()))
 
-            # 남은 수량·금액 = 매입 누계 - 월말 비용 등록(시험군별 사용량) 누계
-            stock_df = pd.read_sql("""
-                SELECT i.item_name AS 품목명, i.category AS 분류, i.unit AS 단위,
-                       COALESCE((SELECT SUM(p.quantity) FROM purchase p WHERE p.item_code = i.item_code), 0) AS 누적매입수량,
-                       COALESCE((SELECT SUM(p.total_amount) FROM purchase p WHERE p.item_code = i.item_code), 0) AS 누적매입금액,
-                       COALESCE((SELECT SUM(u.total_usage) FROM monthly_usage u WHERE u.item_code = i.item_code), 0) AS 누적사용량,
-                       COALESCE((SELECT SUM(u.calculated_amount) FROM monthly_usage u WHERE u.item_code = i.item_code), 0) AS 누적사용금액
-                FROM item_master i
-                ORDER BY i.category, i.item_name
-            """, conn)
-            stock_df["남은수량"] = stock_df["누적매입수량"] - stock_df["누적사용량"]
-            stock_df["남은금액"] = stock_df["누적매입금액"] - stock_df["누적사용금액"]
-            last_settled = conn.execute("SELECT MAX(settlement_month) FROM cattle_cost_log").fetchone()[0]
+        df_purchase["매입일자"] = pd.to_datetime(df_purchase["매입일자"], errors="coerce")
+        df_purchase["단가"] = (pd.to_numeric(df_purchase["총금액"], errors="coerce")
+                             / pd.to_numeric(df_purchase["수량"], errors="coerce").where(lambda s: s != 0)).round(0)
+        df_purchase = df_purchase[["매입ID", "매입일자", "품목명", "분류", "수량", "단위", "총금액", "단가", "품목코드"]]
+        df_purchase.insert(0, "삭제", False)
 
-            remain_df = stock_df[stock_df["남은수량"] > 0.005].copy()
-            settled_note = f"최근 정산 {last_settled}" if last_settled else "정산 내역 없음"
-            with st.expander(f"📦 월말정산 후 남은 품목 ({len(remain_df)}개 · {settled_note})"):
-                st.caption("남은 수량 = 매입 누계 − 월말 비용 등록의 시험군별 사용량 누계")
-                if remain_df.empty:
-                    st.caption("남은 품목이 없습니다.")
-                else:
-                    remain_df["평균단가"] = (remain_df["남은금액"] / remain_df["남은수량"]).round(0)
-                    farm_dataframe(
-                        remain_df[["품목명", "분류", "남은수량", "단위", "평균단가", "남은금액"]],
-                        width="stretch", hide_index=True,
-                        column_config={"남은수량": num("남은 수량"), "평균단가": num("평균단가 (원)"), "남은금액": num("남은 금액 (원)")},
-                    )
-                    show_table_total(len(remain_df), "남은 금액", float(remain_df["남은금액"].sum()))
+        # 필터가 바뀌면 줄 구성이 달라지므로 편집표 키도 바꾼다 (저장 안 한 수정이 다른 줄에 붙지 않게).
+        hist_sig = hashlib.md5(f"{hist_month}|{hist_cat}|{hist_search.strip()}".encode("utf-8")).hexdigest()[:10]
+        purchase_editor_key = f"purchase_editor_{hist_sig}"
+        # 수량·금액을 고치면 단가 칸도 바로 다시 계산해 보여 준다.
+        if purchase_editor_key in st.session_state:
+            for row_idx, changes in st.session_state[purchase_editor_key].get("edited_rows", {}).items():
+                row_idx = int(row_idx)
+                if row_idx < len(df_purchase):
+                    new_amount = changes.get("총금액", df_purchase.at[row_idx, "총금액"])
+                    new_qty = changes.get("수량", df_purchase.at[row_idx, "수량"])
+                    if pd.notna(new_qty) and pd.notna(new_amount) and float(new_qty) != 0:
+                        df_purchase.at[row_idx, "단가"] = round(float(new_amount) / float(new_qty))
+            for row in st.session_state[purchase_editor_key].get("added_rows", []):
+                amt, qty = row.get("총금액"), row.get("수량")
+                if amt is not None and qty:
+                    row["단가"] = round(float(amt) / float(qty))
 
-            all_df = stock_df[stock_df["누적매입수량"] > 0]
-            with st.expander(f"🗂️ 전체 매입 품목 ({len(all_df)}개)"):
-                if all_df.empty:
-                    st.caption("매입한 품목이 없습니다.")
-                else:
-                    farm_dataframe(
-                        all_df[["품목명", "분류", "단위", "누적매입수량", "누적매입금액", "누적사용량", "남은수량"]],
-                        width="stretch", hide_index=True,
-                        column_config={
-                            "누적매입수량": num("누적 매입수량"), "누적매입금액": num("누적 매입금액 (원)"),
-                            "누적사용량": num("누적 사용량"), "남은수량": num("남은 수량"),
-                        },
-                    )
-                    show_table_total(len(all_df), "누적 매입금액", float(all_df["누적매입금액"].sum()))
+        edited_purchase_df = farm_data_editor(
+            df_purchase,
+            width="stretch",
+            hide_index=True,
+            disabled=["매입ID", "분류", "단가", "품목코드"],
+            num_rows="add",  # 줄 추가만 허용. 삭제는 '삭제' 체크박스로만 (줄을 빼서 지우는 일이 없게)
+            key=purchase_editor_key,
+            column_config={
+                "삭제": st.column_config.CheckboxColumn("삭제", width=50),
+                "매입ID": None,  # 저장에 쓰이지만 화면에서는 숨김
+                "품목코드": None,
+                "매입일자": st.column_config.DateColumn("매입일자", format="YYYY-MM-DD", width="small"),
+                "품목명": st.column_config.SelectboxColumn("품목", options=list(hist_name_to_code.keys()), width="medium"),
+                "분류": st.column_config.TextColumn("분류", width="small"),
+                "단위": st.column_config.TextColumn("단위", width="small"),
+                "수량": st.column_config.NumberColumn(format="localized", alignment="right"),
+                "총금액": st.column_config.NumberColumn("총금액 (원)", format="localized", alignment="right", step=1),
+                "단가": st.column_config.NumberColumn("단가 (원)", format="localized", alignment="right", step=1, width="small"),
+            },
+        )
+        show_table_total(len(df_purchase), "총금액", float(pd.to_numeric(df_purchase["총금액"], errors="coerce").fillna(0).sum()))
+        st.caption("새 매입은 '🚚 매입 등록' 탭에서 넣는 것이 편합니다. 이 표 아래 빈 줄로도 추가할 수 있습니다 (단위를 비우면 품목의 단위를 씁니다).")
 
-    st.markdown("---")
-    st.markdown("##### 매입 내역 (체크박스로 삭제 가능)")
-    df_purchase = pd.read_sql("""
-        SELECT p.purchase_id as 매입ID, p.purchase_date as 매입일자, 
-               p.item_code as 품목코드, i.item_name as 품목명,
-               p.quantity as 수량, p.unit as 단위, p.total_amount as 총금액,
-               ROUND(p.total_amount / NULLIF(p.quantity, 0), 0) as 단가
-        FROM purchase p
-        JOIN item_master i ON p.item_code = i.item_code
-        ORDER BY p.purchase_date DESC
-    """, conn)
-    df_purchase.insert(0, "삭제", False)
-        
-    if "purchase_editor" in st.session_state:
-        edits = st.session_state["purchase_editor"].get("edited_rows", {})
-        for row_idx, changes in edits.items():
-            row_idx = int(row_idx)
-            if row_idx < len(df_purchase):
-                new_amount = changes.get("총금액", df_purchase.at[row_idx, "총금액"])
-                new_qty = changes.get("수량", df_purchase.at[row_idx, "수량"])
-                if pd.notna(new_qty) and float(new_qty) != 0:
-                    df_purchase.at[row_idx, "단가"] = round(float(new_amount) / float(new_qty))
-            
-        added = st.session_state["purchase_editor"].get("added_rows", [])
-        for row in added:
-            amt = row.get("총금액", 0)
-            qty = row.get("수량", 0)
-            if qty and float(qty) != 0:
-                row["단가"] = round(float(amt) / float(qty))
-        
-    edited_purchase_df = farm_data_editor(
-        df_purchase,
-        width="stretch",
-        hide_index=True,
-        disabled=["매입ID", "품목명", "단가"],
-        num_rows="add",  # 줄 추가만 허용. 삭제는 '삭제' 체크박스로만 (줄을 빼서 지우는 일이 없게)
-        key="purchase_editor",
-        column_config={
-            "삭제": st.column_config.CheckboxColumn("삭제", width=50),
-            "매입ID": None,  # 저장에 쓰이지만 화면에서는 숨김
-            "매입일자": st.column_config.TextColumn("매입일자", width="small"),
-            "품목코드": st.column_config.TextColumn("코드", width="small"),
-            "단위": st.column_config.TextColumn("단위", width="small"),
-            "수량": st.column_config.NumberColumn(format="localized", alignment="right"),
-            "총금액": st.column_config.NumberColumn("총금액 (원)", format="localized", alignment="right", step=1),
-            "단가": st.column_config.NumberColumn("단가 (원)", format="localized", alignment="right", step=1, width="small"),
-        },
-    )
-        
-    if st.button("매입 수정 사항 저장", type="primary", width="stretch"):
-        pur_changed, pur_deleted, pur_added = editor_changes(
-            df_purchase, edited_purchase_df, "매입ID", ["매입일자", "품목코드", "수량", "단위", "총금액"])
-        pur_added = pur_added[pur_added['매입일자'].notna() & pur_added['품목코드'].notna()]
+        if st.button("매입 수정 사항 저장", type="primary", width="stretch"):
+            pur_changed, pur_deleted, pur_added = editor_changes(
+                df_purchase, edited_purchase_df, "매입ID", ["매입일자", "품목명", "수량", "단위", "총금액"])
+            pur_added = pur_added[pur_added["매입일자"].notna() & pur_added["품목명"].notna()]
 
-        def _save_purchases():
-            write_conn = db_connect(DB_FILE)
-            for _, row in pur_changed.iterrows():
-                write_conn.execute("UPDATE purchase SET purchase_date=?, item_code=?, quantity=?, unit=?, total_amount=? WHERE purchase_id=?",
-                                   (row['매입일자'], row['품목코드'], row['수량'], row.get('단위', ''), row['총금액'], row['매입ID']))
-            for _, row in pur_added.iterrows():
-                write_conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount) VALUES (?, ?, ?, ?, ?)",
-                                   (row['매입일자'], row['품목코드'], row['수량'], row.get('단위', ''), row['총금액']))
-            for mid in pur_deleted['매입ID']:
-                write_conn.execute("DELETE FROM purchase WHERE purchase_id=?", (mid,))
+            def _iso_day(v):
+                return pd.to_datetime(v).strftime("%Y-%m-%d")
 
-            # 전체 품목 재고 및 단가 재계산
-            items = pd.read_sql("SELECT item_code FROM item_master", write_conn)
-            for item in items['item_code']:
-                purchases = pd.read_sql("SELECT quantity, total_amount FROM purchase WHERE item_code=? ORDER BY purchase_date ASC", write_conn, params=(item,))
-                stock = float(purchases['quantity'].sum()) if not purchases.empty else 0.0
-                total_val = float(purchases['total_amount'].sum()) if not purchases.empty else 0.0
-                avg_price = round(total_val / stock, 2) if stock > 0 else 0
-                write_conn.execute("UPDATE item_master SET current_stock=?, moving_avg_price=? WHERE item_code=?", (stock, avg_price, item))
+            def _purchase_values(row):
+                code = hist_name_to_code[row["품목명"]]
+                unit = row.get("단위")
+                if unit is None or pd.isna(unit) or not str(unit).strip():
+                    unit = hist_unit_by_code.get(code) or ""
+                return _iso_day(row["매입일자"]), code, row["수량"], unit, row["총금액"]
 
-            write_conn.commit()
-            write_conn.close()
-            notify(f"매입 수정 {len(pur_changed)}건, 추가 {len(pur_added)}건, 삭제 {len(pur_deleted)}건 저장 · 재고 재계산 완료", icon="✅")
+            def _save_purchases():
+                write_conn = db_connect(DB_FILE)
+                for _, row in pur_changed.iterrows():
+                    write_conn.execute("UPDATE purchase SET purchase_date=?, item_code=?, quantity=?, unit=?, total_amount=? WHERE purchase_id=?",
+                                       (*_purchase_values(row), row["매입ID"]))
+                for _, row in pur_added.iterrows():
+                    write_conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount) VALUES (?, ?, ?, ?, ?)",
+                                       _purchase_values(row))
+                for mid in pur_deleted["매입ID"]:
+                    write_conn.execute("DELETE FROM purchase WHERE purchase_id=?", (mid,))
 
-        save_with_delete_confirm("매입", pur_changed, pur_deleted, pur_added,
-                                 ["매입ID", "매입일자", "품목명", "수량", "단위", "총금액"], "총금액", _save_purchases)
+                # 전체 품목 재고 및 단가 재계산
+                items = pd.read_sql("SELECT item_code FROM item_master", write_conn)
+                for item in items['item_code']:
+                    purchases = pd.read_sql("SELECT quantity, total_amount FROM purchase WHERE item_code=? ORDER BY purchase_date ASC", write_conn, params=(item,))
+                    stock = float(purchases['quantity'].sum()) if not purchases.empty else 0.0
+                    total_val = float(purchases['total_amount'].sum()) if not purchases.empty else 0.0
+                    avg_price = round(total_val / stock, 2) if stock > 0 else 0
+                    write_conn.execute("UPDATE item_master SET current_stock=?, moving_avg_price=? WHERE item_code=?", (stock, avg_price, item))
+
+                write_conn.commit()
+                write_conn.close()
+                notify(f"매입 수정 {len(pur_changed)}건, 추가 {len(pur_added)}건, 삭제 {len(pur_deleted)}건 저장 · 재고 재계산 완료", icon="✅")
+
+            if (pur_changed["매입일자"].isna() | pur_changed["품목명"].isna()).any():
+                st.warning("매입일자나 품목을 비운 줄이 있어 저장하지 않았습니다. 지우려면 '삭제'에 체크하세요.")
+            else:
+                save_with_delete_confirm("매입", pur_changed, pur_deleted, pur_added,
+                                         ["매입일자", "품목명", "수량", "단위", "총금액"], "총금액", _save_purchases)
+
+    with sub_stock:
+        st.subheader("📦 품목별 재고 현황")
+        # 남은 수량·금액 = 매입 누계 - 월말 비용 등록(시험군별 사용량) 누계
+        stock_df = pd.read_sql("""
+            SELECT i.item_name AS 품목명, i.category AS 분류, i.unit AS 단위,
+                   COALESCE((SELECT SUM(p.quantity) FROM purchase p WHERE p.item_code = i.item_code), 0) AS 누적매입수량,
+                   COALESCE((SELECT SUM(p.total_amount) FROM purchase p WHERE p.item_code = i.item_code), 0) AS 누적매입금액,
+                   COALESCE((SELECT SUM(u.total_usage) FROM monthly_usage u WHERE u.item_code = i.item_code), 0) AS 누적사용량,
+                   COALESCE((SELECT SUM(u.calculated_amount) FROM monthly_usage u WHERE u.item_code = i.item_code), 0) AS 누적사용금액
+            FROM item_master i
+            ORDER BY i.category, i.item_name
+        """, conn)
+        stock_df["남은수량"] = stock_df["누적매입수량"] - stock_df["누적사용량"]
+        stock_df["남은금액"] = stock_df["누적매입금액"] - stock_df["누적사용금액"]
+        stock_df["평균단가"] = (stock_df["남은금액"] / stock_df["남은수량"].where(stock_df["남은수량"] > 0.005)).round(0)
+        last_settled = conn.execute("SELECT MAX(settlement_month) FROM cattle_cost_log").fetchone()[0]
+        st.caption("남은 수량 = 매입 누계 − 월말 비용 등록의 시험군별 사용량 누계 · "
+                   + (f"최근 정산 {last_settled}" if last_settled else "정산 내역 없음"))
+
+        sf1, sf2, _ = st.columns([1, 1, 2])
+        with sf1:
+            stock_cat = st.selectbox("🏷️ 분류", ["(전체)", "사료", "조사료", "약품", "기타저장품"], key="stock_cat")
+        with sf2:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            stock_remain_only = st.checkbox("남은 품목만 보기", value=True, key="stock_remain_only")
+        view_df = stock_df
+        if stock_cat != "(전체)":
+            view_df = view_df[view_df["분류"] == stock_cat]
+        if stock_remain_only:
+            view_df = view_df[view_df["남은수량"] > 0.005]
+
+        # 분류별 남은 금액
+        cat_sum = stock_df[stock_df["남은수량"] > 0.005].groupby("분류")["남은금액"].sum()
+        cat_cols = st.columns(4)
+        for col, cat in zip(cat_cols, ["사료", "조사료", "약품", "기타저장품"]):
+            col.metric(f"{cat} 남은 금액", f"{float(cat_sum.get(cat, 0)):,.0f}원")
+
+        if view_df.empty:
+            st.caption("표시할 품목이 없습니다.")
+        else:
+            num = lambda label: st.column_config.NumberColumn(label, format="localized", alignment="right",
+                                                          step=1 if "(원)" in label else None)
+            farm_dataframe(
+                view_df[["품목명", "분류", "단위", "누적매입수량", "누적매입금액", "누적사용량", "남은수량", "평균단가", "남은금액"]],
+                width="stretch", hide_index=True,
+                column_config={
+                    "누적매입수량": num("누적 매입수량"), "누적매입금액": num("누적 매입금액 (원)"),
+                    "누적사용량": num("누적 사용량"), "남은수량": num("남은 수량"),
+                    "평균단가": num("평균단가 (원)"), "남은금액": num("남은 금액 (원)"),
+                },
+            )
+            show_table_total(len(view_df), "남은 금액", float(view_df["남은금액"].sum()))
 
 with tab2:
     st.subheader("💰 월말 비용 등록 및 조회")
