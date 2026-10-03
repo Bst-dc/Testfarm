@@ -2229,7 +2229,7 @@ def generate_cost_allocation_sheet(groups, rows, month, farm_label, actual, diff
     return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(title)}</title>
 <style>{css}
-.foot {{ border: 1px solid #111; border-top: 0; padding: 7px 8px; }}
+.foot {{ padding: 7px 2px; }}
 th {{ font-size: 12px; }}
 </style></head><body>
 <div class="toolbar"><button onclick="window.print()">🖨️ 인쇄 / PDF 저장</button></div>
@@ -2274,8 +2274,9 @@ def cost_allocation_excel(groups, rows, month, farm_label, actual, diff_note, wr
                 ws.write_number(i, c, round(float(v), 2), f_num)
         last = 3 + len(values)
         writer_text = ", ".join(f"{w.strip()}(인)" for w in str(writers).split(",") if w.strip())
-        ws.merge_range(last, 0, last, ncol - 1, f"▣ 차액분 : {diff_note}", f_txt)
-        ws.merge_range(last + 1, 0, last + 1, ncol - 1, f"▣ 작성자 : {writer_text}", f_txt)
+        f_plain = wb.add_format({"valign": "vcenter"})
+        ws.merge_range(last, 0, last, ncol - 1, f"▣ 차액분 : {diff_note}", f_plain)
+        ws.merge_range(last + 1, 0, last + 1, ncol - 1, f"▣ 작성자 : {writer_text}", f_plain)
         ws.set_landscape(); ws.set_paper(9); ws.fit_to_pages(1, 0)
     return buf.getvalue()
 
