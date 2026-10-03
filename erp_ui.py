@@ -661,8 +661,11 @@ def _migrate_schema_pg(db_file):
         "ALTER TABLE testgroup_master ADD COLUMN IF NOT EXISTS location_mapping TEXT",
         "ALTER TABLE purchase ADD COLUMN IF NOT EXISTS unit TEXT",
         "ALTER TABLE item_master ADD COLUMN IF NOT EXISTS unit TEXT",
+        "ALTER TABLE purchase ADD COLUMN IF NOT EXISTS feed_zone TEXT",
+        "ALTER TABLE feed_zone ADD COLUMN IF NOT EXISTS test_groups TEXT",
     ], required_tables=DB_TABLES,
-       required_columns=[("testgroup_master", "location_mapping"), ("purchase", "unit"), ("item_master", "unit")],
+       required_columns=[("testgroup_master", "location_mapping"), ("purchase", "unit"), ("item_master", "unit"),
+                         ("purchase", "feed_zone"), ("feed_zone", "test_groups")],
        required_triggers=["trg_after_insert_purchase"])
 
 # ========== DB 연결 관리 ==========
@@ -729,6 +732,8 @@ def migrate_schema(db_file):
             ("testgroup_master", "location_mapping", "TEXT"),
             ("purchase", "unit", "TEXT"),
             ("item_master", "unit", "TEXT"),
+            ("purchase", "feed_zone", "TEXT"),  # 사료를 넣은 사료빈 구역 (사료 재고 예측용)
+            ("feed_zone", "test_groups", "TEXT"),  # 동 대신 시험군으로 묶은 사료 구역
         ):
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coldef}")
@@ -2378,6 +2383,149 @@ def cost_allocation_excel(groups, rows, month, farm_label, actual, diff_note, wr
         ws.merge_range(last, 0, last, ncol - 1, f"▣ 차액분 : {diff_note}", f_plain)
         ws.merge_range(last + 1, 0, last + 1, ncol - 1, f"▣ 작성자 : {writer_text}", f_plain)
         ws.set_landscape(); ws.set_paper(9); ws.fit_to_pages(1, 1)  # 시험군·품목이 늘어도 A4 가로 한 장에 인쇄
+    return buf.getvalue()
+
+
+# ========== 사료 재고 예측 (사료빈 구역별) ==========
+# 사료빈 구역(동 묶음)마다 하루씩 사료량을 이어서 계산한다.
+#   두수        = 그 구역 동에서 그날 사육중인 두수 (입식 당일은 절식이라 다음 날부터, 출하·폐사일은 제외)
+#   일총급여량  = 개체마다 그날 개월령에 맞는 두당 일급여량(급여 기준)을 더한 값
+#   사료량      = 전날 사료량 − 전날 일총급여량 + 그날 사료 매입(매입 등록에서 이 구역으로 넣은 '사료' 분류 품목)
+#   사료빈 재고 확인값이 있는 날은 그 값으로 다시 맞춘다 (실측이 계산보다 우선).
+# 사료 품목이 바뀌어도 구역 단위로 '사료' 분류 매입을 모두 더하므로 그대로 이어진다.
+def _age_months(birth, day):
+    """개월령 — 개체관리대장과 같은 셈 (태어나면 1개월: 만 개월 + 1)."""
+    m = (day.year - birth.year) * 12 + (day.month - birth.month)
+    if day.day < birth.day:
+        m -= 1
+    return m + 1
+
+
+def _bld_key(v):
+    """'1동' / '1' / ' 1 동' → '1' (동 이름 비교용)"""
+    return str(v or "").replace("동", "").strip()
+
+
+def load_feed_zones(conn):
+    """[(구역 이름, [동, ..]), ..] 등록 순서대로. 시험군으로 묶은 구역은 load_feed_zone_groups 를 함께 본다."""
+    z = pd.read_sql("SELECT zone_name, buildings FROM feed_zone ORDER BY zone_id", conn)
+    return [(r.zone_name, [b.strip() for b in str(r.buildings or "").split(",") if b.strip()])
+            for r in z.itertuples(index=False)]
+
+
+def load_feed_zone_groups(conn):
+    """{구역 이름: [시험군 코드, ..]} — 개체에 동이 입력되지 않은 농장은 시험군으로 구역을 묶는다."""
+    z = pd.read_sql("SELECT zone_name, test_groups FROM feed_zone", conn)
+    return {r.zone_name: [g for g in str(r.test_groups or "").split("|") if g] for r in z.itertuples(index=False)}
+
+
+def _parse_day(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)) or not str(v).strip():
+        return None
+    try:
+        return datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def feed_stock_projection(conn, zone, buildings, start, days, test_groups=()):
+    """구역 하나의 날짜별 사료 재고 계산.
+    반환: (DataFrame[날짜, 두수, 일급여량, 일총급여량, 사료량, 사료매입, 재고확인] 또는 None, 안내문 목록)"""
+    from datetime import timedelta
+    notes = []
+    end = start + timedelta(days=days - 1)
+    checks = pd.read_sql("SELECT check_date, quantity FROM feed_stock_check WHERE zone_name = ? ORDER BY check_date",
+                         conn, params=(zone,))
+    check_of = {_parse_day(r.check_date): float(r.quantity) for r in checks.itertuples(index=False) if _parse_day(r.check_date)}
+    base_days = [d for d in check_of if d <= end]
+    if not base_days:
+        return None, ["사료빈 재고 확인값이 없어 계산할 수 없습니다. 아래 설정의 '사료빈 재고 확인'에 확인한 날짜와 사료량을 넣으세요."]
+    before = [d for d in base_days if d <= start]
+    sim_from = max(before) if before else min(base_days)
+    if not before:
+        notes.append(f"{sim_from:%m-%d} 이전에는 재고 확인값이 없어 그날부터 계산합니다.")
+
+    rations = pd.read_sql("SELECT from_month, kg_per_head FROM feed_ration WHERE zone_name = ? ORDER BY from_month",
+                          conn, params=(zone,))
+    ration_steps = [(int(r.from_month), float(r.kg_per_head)) for r in rations.itertuples(index=False)]
+    if not ration_steps:
+        notes.append("급여 기준(개월령별 두당 일급여량)이 없어 급여량이 0으로 계산됩니다. 아래 설정에서 넣으세요.")
+
+    def kg_for(age):
+        kg = ration_steps[0][1] if ration_steps else 0.0
+        for from_m, v in ration_steps:
+            if age >= from_m:
+                kg = v
+        return kg
+
+    # 구역에 속한 개체: 지정한 동에 있거나, 지정한 시험군에 속한 개체 (둘 중 하나만 맞아도 포함)
+    keys = {_bld_key(b) for b in buildings}
+    groups = set(test_groups)
+    cattle = pd.read_sql("SELECT building, test_group_code, birth_date, admission_date, closure_date FROM cattle", conn)
+    herd = [(_parse_day(r.birth_date), _parse_day(r.admission_date), _parse_day(r.closure_date))
+            for r in cattle.itertuples(index=False)
+            if (keys and _bld_key(r.building) in keys) or (groups and r.test_group_code in groups)]
+    no_birth = sum(1 for b, _, _ in herd if b is None)
+    if no_birth:
+        notes.append(f"생년월일이 없는 {no_birth}두는 급여 기준의 첫 줄 급여량으로 계산했습니다.")
+
+    pur = pd.read_sql("""
+        SELECT p.purchase_date AS d, SUM(p.quantity) AS q
+        FROM purchase p JOIN item_master i ON i.item_code = p.item_code
+        WHERE i.category = '사료' AND p.feed_zone = ? AND p.purchase_date >= ? AND p.purchase_date <= ?
+        GROUP BY p.purchase_date
+    """, conn, params=(zone, sim_from.isoformat(), end.isoformat()))
+    pur_of = {_parse_day(r.d): float(r.q) for r in pur.itertuples(index=False)}
+
+    rows, stock, prev_total = [], None, 0.0
+    d = sim_from
+    while d <= end:
+        heads, total = 0, 0.0
+        for birth, adm, clo in herd:
+            if (adm is None or adm < d) and (clo is None or clo > d):
+                heads += 1
+                total += kg_for(_age_months(birth, d)) if birth else kg_for(0)
+        bought = pur_of.get(d, 0.0)
+        stock = check_of[d] if d == sim_from else stock - prev_total + bought
+        checked = check_of.get(d)
+        if checked is not None:
+            stock = checked
+        if d >= start:
+            rows.append({"날짜": d, "두수": heads, "일급여량": (total / heads) if heads else 0.0,
+                         "일총급여량": total, "사료량": stock, "사료매입": bought, "재고확인": checked})
+        prev_total = total
+        d += timedelta(days=1)
+    return pd.DataFrame(rows), notes
+
+
+def feed_stock_excel(blocks, farm_name):
+    """blocks: [(구역 이름, 동 목록, DataFrame)] → 보내 준 엑셀처럼 날짜를 가로로 놓은 표."""
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as xw:
+        wb = xw.book
+        ws = wb.add_worksheet("사료재고")
+        f_b = wb.add_format({"border": 1, "align": "center", "valign": "vcenter", "text_wrap": True})
+        f_l = wb.add_format({"border": 1})
+        f_n = wb.add_format({"border": 1, "num_format": "#,##0"})
+        f_d = wb.add_format({"border": 1, "num_format": "0.0#"})
+        ws.set_column(0, 1, 12); ws.set_column(2, 2, 10); ws.set_column(3, 60, 11)
+        labels = ["날짜", "두수", "일급여량", "일총급여량", "사료량", "사료매입", "재고확인"]
+        row = 0
+        for zone, blds, df in blocks:
+            n = len(labels)
+            ws.merge_range(row, 0, row + n - 1, 0, farm_name, f_b)
+            ws.merge_range(row, 1, row + n - 1, 1, f"{zone}\n({', '.join(blds)})", f_b)
+            for i, lab in enumerate(labels):
+                ws.write(row + i, 2, lab, f_l)
+            for j, r in enumerate(df.to_dict("records"), start=3):
+                ws.write(row, j, r["날짜"].strftime("%Y-%m-%d"), f_b)
+                ws.write_number(row + 1, j, r["두수"], f_n)
+                ws.write_number(row + 2, j, round(r["일급여량"], 2), f_d)
+                ws.write_number(row + 3, j, round(r["일총급여량"]), f_n)
+                ws.write_number(row + 4, j, round(r["사료량"]), f_n)
+                ws.write(row + 5, j, round(r["사료매입"]) if r["사료매입"] else "", f_n)
+                ws.write(row + 6, j, round(r["재고확인"]) if r["재고확인"] is not None and not pd.isna(r["재고확인"]) else "", f_n)
+            row += n + 1
     return buf.getvalue()
 
 
@@ -4267,8 +4415,8 @@ with tab1:
 
 with tab0:
     # 한 화면에 등록·내역·재고·품목이 몰려 있어 길고 복잡했으므로, 개체 관리 탭처럼 하위 탭으로 나눈다.
-    sub_pur_entry, sub_pur_hist, sub_stock, sub_stock_count, sub_items = st.tabs(
-        ["🚚 매입 등록", "📋 매입 내역", "📦 재고 현황", "🧾 재고조사표", "🏷️ 품목 관리"])
+    sub_pur_entry, sub_pur_hist, sub_stock, sub_feed, sub_stock_count, sub_items = st.tabs(
+        ["🚚 매입 등록", "📋 매입 내역", "📦 재고 현황", "🌾 사료 재고", "🧾 재고조사표", "🏷️ 품목 관리"])
 
     with sub_items:
         col_item_form, col_item_list = st.columns([1, 2])
@@ -4403,6 +4551,9 @@ with tab0:
             st.info("먼저 '🏷️ 품목 관리' 탭에서 품목을 등록해 주세요.")
         else:
             item_units = {r['item_code']: (r['unit'] if pd.notna(r['unit']) else "") for _, r in items_df.iterrows()}
+            item_category = dict(zip(items_df['item_code'], items_df['category']))
+            # 사료는 어느 사료빈(구역)에 넣었는지 함께 기록한다 (🌾 사료 재고 계산용).
+            pur_zone_names = [z for z, _ in load_feed_zones(conn)]
 
             # 거래명세서 한 장에 여러 품목이 함께 들어오므로, 매입일자는 한 번만 고르고
             # 표에 줄마다 품목을 골라 수량·금액을 넣어 한꺼번에 등록한다 (시험군별 사용량 등록과 같은 방식).
@@ -4423,22 +4574,24 @@ with tab0:
             remaining_by_code = {r['item_code']: float(r['remaining']) for _, r in items_df.iterrows()}
             purchase_ver = st.session_state.setdefault("_purchase_entry_ver", 0)
             purchase_options = list(purchase_name_to_code.keys())
-            if (st.session_state.get("_purchase_entry_opts") != purchase_options
+            if (st.session_state.get("_purchase_entry_opts") != (purchase_options, pur_zone_names)
                     or "_purchase_entry_base" not in st.session_state):
                 code_to_label = {code: label for label, code in purchase_name_to_code.items()}
                 draft = st.session_state.get("_purchase_entry_draft", [])
                 rows = [
-                    {"품목": code_to_label.get(code), "수량": qty, "총매입금액": amt}
-                    for code, qty, amt in draft
+                    {"품목": code_to_label.get(code), "구역": zone if zone in pur_zone_names else None,
+                     "수량": qty, "총매입금액": amt}
+                    for code, zone, qty, amt in draft
                     if code is None or code in code_to_label  # 그사이 삭제된 품목의 줄은 버린다
                 ]
-                rows += [{"품목": None, "수량": None, "총매입금액": None}] * max(8 - len(rows), 0)
+                rows += [{"품목": None, "구역": None, "수량": None, "총매입금액": None}] * max(8 - len(rows), 0)
                 st.session_state["_purchase_entry_base"] = pd.DataFrame({
                     "품목": pd.Series([r["품목"] for r in rows], dtype="object"),
+                    "구역": pd.Series([r["구역"] for r in rows], dtype="object"),
                     "수량": pd.Series([r["수량"] for r in rows], dtype="float"),
                     "총매입금액": pd.Series([r["총매입금액"] for r in rows], dtype="float"),
                 })
-                st.session_state["_purchase_entry_opts"] = purchase_options
+                st.session_state["_purchase_entry_opts"] = (purchase_options, pur_zone_names)
             purchase_edited = farm_data_editor(
                 st.session_state["_purchase_entry_base"],
                 placeholder="",
@@ -4448,6 +4601,10 @@ with tab0:
                 key=f"purchase_entry_editor_{purchase_ver}",
                 column_config={
                     "품목": st.column_config.SelectboxColumn("품목 (남은 수량)", options=purchase_options, width="medium"),
+                    # 사료빈 구역이 없으면 칸을 숨긴다.
+                    "구역": (st.column_config.SelectboxColumn("구역 (사료만)", options=pur_zone_names, width="small",
+                                                             help="사료를 넣은 사료빈 구역. 사료가 아닌 품목은 비워 두세요.")
+                             if pur_zone_names else None),
                     "수량": st.column_config.NumberColumn("매입수량", min_value=0, format="localized", alignment="right"),
                     "총매입금액": st.column_config.NumberColumn("총매입금액 (원)", min_value=0, format="localized", alignment="right"),
                 },
@@ -4455,6 +4612,7 @@ with tab0:
             # 입력 중인 내용을 품목코드로 저장해 둔다 (품목 등록 등으로 선택지가 바뀌어도 위에서 되살린다).
             st.session_state["_purchase_entry_draft"] = [
                 (purchase_name_to_code.get(r.품목) if pd.notna(r.품목) else None,
+                 r.구역 if pd.notna(r.구역) else None,
                  None if pd.isna(r.수량) else float(r.수량),
                  None if pd.isna(r.총매입금액) else float(r.총매입금액))
                 for r in purchase_edited.itertuples(index=False)
@@ -4480,11 +4638,17 @@ with tab0:
                     problems.append(f"{row.항목}: 수량과 금액을 0보다 크게 입력하세요.")
                     continue
                 code = row.코드
+                is_feed = item_category.get(code) == "사료"
+                zone = row.구역 if (is_feed and pd.notna(row.구역)) else None
+                if is_feed and pur_zone_names and not zone:
+                    problems.append(f"{row.항목}: 사료는 넣은 사료빈 구역을 고르세요.")
+                    continue
                 rem = remaining_by_code[code]
                 remaining_by_code[code] = rem + qty
-                rows_to_insert.append((purchase_date.isoformat(), code, qty, item_units.get(code) or "", amt))
+                rows_to_insert.append((purchase_date.isoformat(), code, qty, item_units.get(code) or "", amt, zone))
                 preview.append({
-                    "품목": row.항목, "현재 남은 수량": rem, "매입수량": qty, "단가": round(amt / qty, 2),
+                    "품목": row.항목, **({"구역": zone or ""} if pur_zone_names else {}),
+                    "현재 남은 수량": rem, "매입수량": qty, "단가": round(amt / qty, 2),
                     "총매입금액": amt, "등록 후 남은 수량": rem + qty, "단위": item_units.get(code) or "",
                 })
 
@@ -4512,7 +4676,7 @@ with tab0:
                     write_conn = db_connect(DB_FILE)
                     try:
                         write_conn.executemany(
-                            "INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount) VALUES (?, ?, ?, ?, ?)",
+                            "INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount, feed_zone) VALUES (?, ?, ?, ?, ?, ?)",
                             rows_to_insert,
                         )
                         write_conn.commit()
@@ -4531,7 +4695,7 @@ with tab0:
         df_purchase_all = pd.read_sql("""
             SELECT p.purchase_id as 매입ID, p.purchase_date as 매입일자,
                    p.item_code as 품목코드, i.item_name as 품목명, i.category as 분류,
-                   p.quantity as 수량, p.unit as 단위, p.total_amount as 총금액
+                   p.quantity as 수량, p.unit as 단위, p.total_amount as 총금액, p.feed_zone as 구역
             FROM purchase p
             JOIN item_master i ON p.item_code = i.item_code
             ORDER BY p.purchase_date DESC, p.purchase_id DESC
@@ -4539,6 +4703,7 @@ with tab0:
         hist_items = pd.read_sql("SELECT item_code, item_name, unit FROM item_master ORDER BY category, item_name", conn)
         hist_name_to_code = dict(zip(hist_items["item_name"], hist_items["item_code"]))
         hist_unit_by_code = dict(zip(hist_items["item_code"], hist_items["unit"]))
+        hist_zone_names = [z for z, _ in load_feed_zones(conn)]
 
         pur_months = sorted({str(d)[:7] for d in df_purchase_all["매입일자"].dropna()}, reverse=True)
         this_month = datetime.now().strftime("%Y-%m")
@@ -4586,7 +4751,7 @@ with tab0:
         df_purchase["매입일자"] = pd.to_datetime(df_purchase["매입일자"], errors="coerce")
         df_purchase["단가"] = (pd.to_numeric(df_purchase["총금액"], errors="coerce")
                              / pd.to_numeric(df_purchase["수량"], errors="coerce").where(lambda s: s != 0)).round(0)
-        df_purchase = df_purchase[["매입ID", "매입일자", "품목명", "분류", "수량", "단위", "총금액", "단가", "품목코드"]]
+        df_purchase = df_purchase[["매입ID", "매입일자", "품목명", "분류", "구역", "수량", "단위", "총금액", "단가", "품목코드"]]
         df_purchase.insert(0, "삭제", False)
 
         # 필터가 바뀌면 줄 구성이 달라지므로 편집표 키도 바꾼다 (저장 안 한 수정이 다른 줄에 붙지 않게).
@@ -4620,6 +4785,10 @@ with tab0:
                 "매입일자": st.column_config.DateColumn("매입일자", format="YYYY-MM-DD", width="small"),
                 "품목명": st.column_config.SelectboxColumn("품목", options=list(hist_name_to_code.keys()), width="medium"),
                 "분류": st.column_config.TextColumn("분류", width="small"),
+                "구역": (st.column_config.SelectboxColumn(
+                    "구역", width="small", help="사료를 넣은 사료빈 구역 (사료만)",
+                    options=sorted(set(hist_zone_names) | set(df_purchase["구역"].dropna())))
+                    if hist_zone_names or df_purchase["구역"].notna().any() else None),
                 "단위": st.column_config.TextColumn("단위", width="small"),
                 "수량": st.column_config.NumberColumn(format="localized", alignment="right"),
                 "총금액": st.column_config.NumberColumn("총금액 (원)", format="localized", alignment="right", step=1),
@@ -4631,7 +4800,7 @@ with tab0:
 
         if st.button("매입 수정 사항 저장", type="primary", width="stretch"):
             pur_changed, pur_deleted, pur_added = editor_changes(
-                df_purchase, edited_purchase_df, "매입ID", ["매입일자", "품목명", "수량", "단위", "총금액"])
+                df_purchase, edited_purchase_df, "매입ID", ["매입일자", "품목명", "구역", "수량", "단위", "총금액"])
             pur_added = pur_added[pur_added["매입일자"].notna() & pur_added["품목명"].notna()]
 
             def _iso_day(v):
@@ -4642,15 +4811,17 @@ with tab0:
                 unit = row.get("단위")
                 if unit is None or pd.isna(unit) or not str(unit).strip():
                     unit = hist_unit_by_code.get(code) or ""
-                return _iso_day(row["매입일자"]), code, row["수량"], unit, row["총금액"]
+                zone = row.get("구역")
+                zone = zone if zone is not None and not pd.isna(zone) and str(zone).strip() else None
+                return _iso_day(row["매입일자"]), code, row["수량"], unit, row["총금액"], zone
 
             def _save_purchases():
                 write_conn = db_connect(DB_FILE)
                 for _, row in pur_changed.iterrows():
-                    write_conn.execute("UPDATE purchase SET purchase_date=?, item_code=?, quantity=?, unit=?, total_amount=? WHERE purchase_id=?",
+                    write_conn.execute("UPDATE purchase SET purchase_date=?, item_code=?, quantity=?, unit=?, total_amount=?, feed_zone=? WHERE purchase_id=?",
                                        (*_purchase_values(row), row["매입ID"]))
                 for _, row in pur_added.iterrows():
-                    write_conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount) VALUES (?, ?, ?, ?, ?)",
+                    write_conn.execute("INSERT INTO purchase (purchase_date, item_code, quantity, unit, total_amount, feed_zone) VALUES (?, ?, ?, ?, ?, ?)",
                                        _purchase_values(row))
                 for mid in pur_deleted["매입ID"]:
                     write_conn.execute("DELETE FROM purchase WHERE purchase_id=?", (mid,))
@@ -4726,6 +4897,215 @@ with tab0:
                 },
             )
             show_table_total(len(view_df), "남은 금액", float(view_df["남은금액"].sum()))
+
+    with sub_feed:
+        st.subheader("🌾 사료 재고 (사료빈 구역별)")
+        st.caption("구역마다 날짜별 두수 · 두당 일급여량(개월령 기준) · 일총급여량 · 사료량 · 사료 매입을 계산합니다. "
+                   "사료량 = 전날 사료량 − 전날 일총급여량 + 그날 매입(매입 등록에서 이 구역으로 넣은 '사료' 품목). "
+                   "사료빈 재고 확인값을 넣은 날은 그 값으로 다시 맞춥니다.")
+        feed_zones = load_feed_zones(conn)
+        feed_zone_groups = load_feed_zone_groups(conn)
+        feed_group_df = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master ORDER BY test_group_code", conn)
+        feed_group_name = dict(zip(feed_group_df["test_group_code"], feed_group_df["test_name"]))
+
+        def _zone_desc(z, blds):
+            parts = [", ".join(blds)] if blds else []
+            parts += [f"시험군 {feed_group_name.get(g, g)}" for g in feed_zone_groups.get(z, [])]
+            return " · ".join(parts) or "동·시험군 미지정"
+
+        if feed_zones:
+            ff1, ff2, _ = st.columns([1, 1, 2])
+            with ff1:
+                feed_start = st.date_input("시작일", value=datetime.now().date(), key="feed_start")
+            with ff2:
+                feed_days = st.selectbox("기간", [14, 21, 31, 45], format_func=lambda n: f"{n}일", key="feed_days")
+            feed_blocks = []
+            for zone, blds in feed_zones:
+                st.markdown(f"##### 🏠 {zone} ({_zone_desc(zone, blds)})")
+                proj, notes = feed_stock_projection(conn, zone, blds, feed_start, feed_days, feed_zone_groups.get(zone, []))
+                for n_ in notes:
+                    st.caption("※ " + n_)
+                if proj is None or proj.empty:
+                    continue
+                feed_blocks.append((zone, [_zone_desc(zone, blds)], proj))
+
+                def _fmt(v, digits=0):
+                    if v is None or (isinstance(v, float) and pd.isna(v)):
+                        return ""
+                    return f"{v:,.{digits}f}"
+
+                wide = pd.DataFrame(
+                    {
+                        r["날짜"].strftime("%m-%d") + " " + "월화수목금토일"[r["날짜"].weekday()]: [
+                            f"{r['두수']:,}", _fmt(r["일급여량"], 2), _fmt(r["일총급여량"]), _fmt(r["사료량"]),
+                            _fmt(r["사료매입"]) if r["사료매입"] else "", _fmt(r["재고확인"]),
+                        ]
+                        for r in proj.to_dict("records")
+                    },
+                    index=["두수", "일급여량 (kg/두)", "일총급여량 (kg)", "사료량 (kg)", "사료매입 (kg)", "재고확인 (kg)"],
+                )
+                # 사료량이 0 아래로 떨어지는 날은 빨간 글씨로 보이게 한다 (알림 대신 표에서 바로 확인).
+                farm_dataframe(
+                    wide.style.apply(
+                        lambda col: ["color: #B42318; font-weight: 700" if (i == 3 and col.iloc[3].startswith("-")) else ""
+                                     for i in range(len(col))], axis=0),
+                    width="stretch",
+                )
+            if feed_blocks:
+                st.download_button("📗 엑셀로 내려받기", feed_stock_excel(feed_blocks, selected_farm),
+                                   file_name=f"사료재고_{selected_farm}_{feed_start:%Y%m%d}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                   key="feed_xlsx_dl")
+        else:
+            st.info("먼저 아래 설정에서 사료빈 구역을 만드세요. (예: 고아 '1-2동' / '3동' / '4동'. 개체에 동이 없는 선산은 시험군으로 묶기)")
+
+        st.markdown("---")
+        with st.expander("⚙️ 설정 — 구역 · 급여 기준 · 사료빈 재고 확인", expanded=not feed_zones):
+            set_zone, set_ration, set_check = st.tabs(["🏠 구역", "🥣 급여 기준 (개월령별)", "📏 사료빈 재고 확인"])
+            bld_options = [f"{i}동" for i in range(1, farm_b_cnt + 1)]
+            zone_names = [z for z, _ in feed_zones]
+
+            with set_zone:
+                st.caption("사료빈 하나를 같이 쓰는 동들을 한 구역으로 묶습니다. 매입 등록에서 사료를 넣을 때 이 구역을 고릅니다. "
+                           "개체에 동이 입력되어 있지 않으면 시험군으로 묶으세요 (동 또는 시험군 중 하나만 맞아도 그 구역 두수에 들어갑니다).")
+                if feed_zones:
+                    farm_dataframe(pd.DataFrame([{"구역": z, "동": ", ".join(b),
+                                                  "시험군": ", ".join(feed_group_name.get(g, g) for g in feed_zone_groups.get(z, []))}
+                                                 for z, b in feed_zones]),
+                                   width="stretch", hide_index=True)
+                with st.form("feed_zone_add_form", clear_on_submit=True):
+                    zc1, zc2, zc2b = st.columns([1, 1.5, 1.5])
+                    new_zone = zc1.text_input("새 구역 이름", placeholder="예: 1-3동")
+                    new_zone_blds = zc2.multiselect("포함되는 동", bld_options)
+                    new_zone_groups = zc2b.multiselect("또는 시험군", list(feed_group_name.keys()),
+                                                       format_func=lambda g: feed_group_name.get(g, g))
+                    if st.form_submit_button("구역 추가", type="primary"):
+                        nz = new_zone.strip()
+                        if not nz or not (new_zone_blds or new_zone_groups):
+                            st.warning("구역 이름과 동(또는 시험군)을 넣으세요.")
+                        elif nz in zone_names:
+                            st.warning(f"'{nz}' 구역이 이미 있습니다.")
+                        else:
+                            wc = db_connect(DB_FILE)
+                            wc.execute("INSERT INTO feed_zone (zone_name, buildings, test_groups) VALUES (?, ?, ?)",
+                                       (nz, ",".join(new_zone_blds), "|".join(new_zone_groups)))
+                            wc.commit(); wc.close()
+                            notify(f"사료 구역 '{nz}' 추가", icon="✅")
+                            st.rerun()
+                if feed_zones:
+                    st.markdown("###### 구역 수정 / 삭제")
+                    zc3, zc4, zc4b = st.columns([1, 1.5, 1.5])
+                    edit_zone = zc3.selectbox("구역", zone_names, key="feed_zone_edit_sel")
+                    cur_blds = dict(feed_zones)[edit_zone]
+                    edit_blds = zc4.multiselect("포함되는 동", sorted(set(bld_options) | set(cur_blds)), default=cur_blds,
+                                                key=f"feed_zone_edit_blds_{edit_zone}")
+                    cur_groups = [g for g in feed_zone_groups.get(edit_zone, []) if g in feed_group_name]
+                    edit_groups = zc4b.multiselect("또는 시험군", list(feed_group_name.keys()), default=cur_groups,
+                                                   format_func=lambda g: feed_group_name.get(g, g),
+                                                   key=f"feed_zone_edit_groups_{edit_zone}")
+                    zb1, zb2 = st.columns(2)
+                    if zb1.button("동·시험군 수정 저장", width="stretch", key="feed_zone_save"):
+                        wc = db_connect(DB_FILE)
+                        wc.execute("UPDATE feed_zone SET buildings = ?, test_groups = ? WHERE zone_name = ?",
+                                   (",".join(edit_blds), "|".join(edit_groups), edit_zone))
+                        wc.commit(); wc.close()
+                        notify(f"'{edit_zone}' 구역의 동·시험군을 수정했습니다.", icon="✅")
+                        st.rerun()
+                    del_ok = st.checkbox(f"'{edit_zone}' 구역과 그 급여 기준·재고 확인값을 삭제합니다 (매입 기록은 남습니다)",
+                                         key=f"feed_zone_del_ok_{edit_zone}")
+                    if zb2.button("구역 삭제", width="stretch", disabled=not del_ok, key="feed_zone_del"):
+                        wc = db_connect(DB_FILE)
+                        for tbl in ("feed_ration", "feed_stock_check", "feed_zone"):
+                            wc.execute(f"DELETE FROM {tbl} WHERE zone_name = ?", (edit_zone,))
+                        wc.commit(); wc.close()
+                        notify(f"사료 구역 '{edit_zone}' 삭제", icon="🗑️")
+                        st.rerun()
+
+            with set_ration:
+                if not feed_zones:
+                    st.caption("구역을 먼저 만드세요.")
+                else:
+                    st.caption("개월령(태어나면 1개월)이 '부터' 값 이상이면 그 줄의 두당 일급여량을 씁니다. "
+                               "예: 7개월부터 4kg, 10개월부터 6kg, 14개월부터 8kg. 구역(시험군)마다 따로 정합니다.")
+                    ration_zone = st.selectbox("구역", zone_names, key="feed_ration_zone")
+                    cur_ration = pd.read_sql("SELECT from_month, kg_per_head FROM feed_ration WHERE zone_name = ? ORDER BY from_month",
+                                             conn, params=(ration_zone,))
+                    ration_base = pd.DataFrame({
+                        "부터": pd.Series(pd.to_numeric(cur_ration["from_month"]).tolist() + [None] * 3, dtype="float"),
+                        "일급여량": pd.Series(pd.to_numeric(cur_ration["kg_per_head"]).tolist() + [None] * 3, dtype="float"),
+                    })
+                    ration_ver = st.session_state.setdefault("_feed_ration_ver", 0)
+                    ration_edit = farm_data_editor(
+                        ration_base, hide_index=True, num_rows="dynamic", placeholder="", width="stretch",
+                        key=f"feed_ration_editor_{ration_zone}_{ration_ver}",
+                        column_config={
+                            "부터": st.column_config.NumberColumn("개월령 (부터)", min_value=0, max_value=60, step=1, format="%d"),
+                            "일급여량": st.column_config.NumberColumn("두당 일급여량 (kg)", min_value=0, step=0.1, format="%.1f"),
+                        },
+                    )
+                    other_zones = [z for z in zone_names if z != ration_zone]
+                    if st.button("급여 기준 저장", type="primary", width="stretch", key="feed_ration_save"):
+                        valid = ration_edit.dropna(subset=["부터", "일급여량"])
+                        if valid["부터"].duplicated().any():
+                            st.warning("같은 개월령이 두 줄 있습니다. 한 줄로 정리하세요.")
+                        else:
+                            wc = db_connect(DB_FILE)
+                            wc.execute("DELETE FROM feed_ration WHERE zone_name = ?", (ration_zone,))
+                            wc.executemany("INSERT INTO feed_ration (zone_name, from_month, kg_per_head) VALUES (?, ?, ?)",
+                                           [(ration_zone, int(r.부터), float(r.일급여량)) for r in valid.itertuples(index=False)])
+                            wc.commit(); wc.close()
+                            st.session_state["_feed_ration_ver"] = ration_ver + 1
+                            notify(f"'{ration_zone}' 급여 기준 {len(valid)}줄 저장", icon="✅")
+                            st.rerun()
+                    if other_zones and not cur_ration.empty:
+                        copy_to = st.multiselect("이 급여 기준을 다른 구역에도 똑같이 적용", other_zones, key="feed_ration_copy_to")
+                        if st.button("선택한 구역에 복사", width="stretch", disabled=not copy_to, key="feed_ration_copy"):
+                            wc = db_connect(DB_FILE)
+                            for z in copy_to:
+                                wc.execute("DELETE FROM feed_ration WHERE zone_name = ?", (z,))
+                                wc.executemany("INSERT INTO feed_ration (zone_name, from_month, kg_per_head) VALUES (?, ?, ?)",
+                                               [(z, int(r.from_month), float(r.kg_per_head)) for r in cur_ration.itertuples(index=False)])
+                            wc.commit(); wc.close()
+                            notify(f"급여 기준을 {', '.join(copy_to)}에 복사했습니다.", icon="✅")
+                            st.rerun()
+
+            with set_check:
+                if not feed_zones:
+                    st.caption("구역을 먼저 만드세요.")
+                else:
+                    st.caption("사료빈을 직접 확인한 날의 사료량(kg)을 넣으면 그날부터 다시 계산합니다. 계산의 출발점이므로 최소 한 번은 넣어야 합니다.")
+                    with st.form("feed_check_form", clear_on_submit=True):
+                        fc1, fc2, fc3 = st.columns(3)
+                        chk_zone = fc1.selectbox("구역", zone_names)
+                        chk_date = fc2.date_input("확인 날짜", value=datetime.now().date())
+                        chk_qty = fc3.number_input("사료량 (kg)", min_value=0, step=100, value=0)
+                        if st.form_submit_button("재고 확인값 저장", type="primary"):
+                            wc = db_connect(DB_FILE)
+                            # 같은 구역·날짜 값이 있으면 바꾼다.
+                            wc.execute("DELETE FROM feed_stock_check WHERE zone_name = ? AND check_date = ?", (chk_zone, chk_date.isoformat()))
+                            wc.execute("INSERT INTO feed_stock_check (zone_name, check_date, quantity) VALUES (?, ?, ?)",
+                                       (chk_zone, chk_date.isoformat(), float(chk_qty)))
+                            wc.commit(); wc.close()
+                            notify(f"'{chk_zone}' {chk_date.isoformat()} 사료량 {chk_qty:,}kg 저장", icon="✅")
+                            st.rerun()
+                    checks_df = pd.read_sql("SELECT zone_name AS 구역, check_date AS 확인날짜, quantity AS 사료량 FROM feed_stock_check "
+                                            "ORDER BY check_date DESC, zone_name", conn)
+                    if not checks_df.empty:
+                        checks_df.insert(0, "삭제", False)
+                        checks_edit = farm_data_editor(
+                            checks_df, hide_index=True, width="stretch", num_rows="fixed",
+                            disabled=["구역", "확인날짜", "사료량"], key="feed_check_editor",
+                            column_config={"삭제": st.column_config.CheckboxColumn("삭제", width=50),
+                                           "사료량": st.column_config.NumberColumn("사료량 (kg)", format="localized")},
+                        )
+                        to_del = checks_edit[checks_edit["삭제"].fillna(False).astype(bool)]
+                        if st.button(f"체크한 확인값 {len(to_del)}건 삭제", disabled=to_del.empty, key="feed_check_del"):
+                            wc = db_connect(DB_FILE)
+                            for r in to_del.itertuples(index=False):
+                                wc.execute("DELETE FROM feed_stock_check WHERE zone_name = ? AND check_date = ?", (r.구역, r.확인날짜))
+                            wc.commit(); wc.close()
+                            notify(f"재고 확인값 {len(to_del)}건 삭제", icon="🗑️")
+                            st.rerun()
 
     with sub_stock_count:
         st.subheader("🧾 재고조사표")

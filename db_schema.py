@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS purchase (
     item_code TEXT REFERENCES item_master(item_code),
     quantity NUMERIC(10, 2) NOT NULL,
     unit TEXT,
-    total_amount NUMERIC(12, 2) NOT NULL
+    total_amount NUMERIC(12, 2) NOT NULL,
+    feed_zone TEXT
 );
 
 CREATE TABLE IF NOT EXISTS monthly_usage (
@@ -104,6 +105,28 @@ CREATE TABLE IF NOT EXISTS cattle_item_usage_log (
     allocated_usage NUMERIC(10, 2) NOT NULL,
     allocated_amount NUMERIC(12, 2) NOT NULL,
     UNIQUE (cattle_id, settlement_month, item_code)
+);
+
+-- 사료 재고 예측: 사료빈 구역(동 묶음), 구역별 월령별 두당 일급여량, 사료빈 실제 재고 확인값
+CREATE TABLE IF NOT EXISTS feed_zone (
+    zone_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    zone_name TEXT NOT NULL UNIQUE,
+    buildings TEXT,
+    test_groups TEXT
+);
+
+CREATE TABLE IF NOT EXISTS feed_ration (
+    zone_name TEXT NOT NULL,
+    from_month INTEGER NOT NULL,
+    kg_per_head NUMERIC(10, 2) NOT NULL,
+    PRIMARY KEY (zone_name, from_month)
+);
+
+CREATE TABLE IF NOT EXISTS feed_stock_check (
+    zone_name TEXT NOT NULL,
+    check_date DATE NOT NULL,
+    quantity NUMERIC(12, 2) NOT NULL,
+    PRIMARY KEY (zone_name, check_date)
 );
 
 CREATE TRIGGER IF NOT EXISTS trg_after_insert_purchase
@@ -156,4 +179,5 @@ PG_DDL = re.sub(
 DB_TABLES = [
     "testgroup_master", "cattle", "item_master", "disease_record", "purchase",
     "monthly_usage", "monthly_fixedcost", "cattle_cost_log", "cattle_item_usage_log",
+    "feed_zone", "feed_ration", "feed_stock_check",
 ]
