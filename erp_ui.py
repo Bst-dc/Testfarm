@@ -470,16 +470,18 @@ def settlement_month_input(conn, tables, label, key, view_keys):
     return st.text_input(label, key=key, on_change=_sync, help="형식: YYYY-MM")
 
 
-def month_view_select(conn, table, key, default_month):
+def month_view_select(conn, table, key, default_month, include_all=False):
     """등록 내역 표 위에 '조회 연월' 선택 상자를 그리고 고른 연월을 돌려준다.
-    선택지는 표에 실제로 있는 연월 + 기본 연월(최근 등록한 달)이다.
+    선택지는 표에 실제로 있는 연월 + 기본 연월(최근 등록한 달)이다. include_all 이면 맨 앞에 '(전체)'.
     처음 열면 내역이 있는 가장 최근 달을 보여 준다(없으면 기본 연월)."""
     months = [r[0] for r in conn.execute(
         f"SELECT DISTINCT settlement_month FROM {table} WHERE settlement_month IS NOT NULL"
     ).fetchall()]
     if key not in st.session_state:
         st.session_state[key] = max(months) if months else default_month
-    months = sorted(set(months) | {default_month, st.session_state[key]}, reverse=True)
+    months = sorted(set(months) | {default_month, st.session_state[key]} - {"(전체)"}, reverse=True)
+    if include_all:
+        months = ["(전체)"] + months
     left, _ = st.columns([1, 3])  # 짧은 선택값이 칸 전체로 늘어나지 않게
     return left.selectbox("조회 연월", months, key=key)
 
@@ -5039,8 +5041,10 @@ with tab2:
     st.markdown("---")
     st.markdown("##### 등록된 사용 내역")
     usage_view_month = month_view_select(conn, "monthly_usage", "usage_view_month",
-                                         st.session_state.get("cost_month_input") or datetime.now().strftime('%Y-%m'))
-    df_usage = pd.read_sql("""
+                                         st.session_state.get("cost_month_input") or datetime.now().strftime('%Y-%m'),
+                                         include_all=True)
+    usage_all = usage_view_month == "(전체)"  # 전체 기간 사용 내역 (최근 달부터)
+    df_usage = pd.read_sql(f"""
         SELECT u.usage_id as ID, u.settlement_month as 정산연월,
                t.test_name as 시험군, i.item_name as 품목명,
                u.total_usage as 사용량, u.applied_price as 적용단가,
@@ -5048,9 +5052,9 @@ with tab2:
         FROM monthly_usage u
         JOIN testgroup_master t ON u.test_group_code = t.test_group_code
         JOIN item_master i ON u.item_code = i.item_code
-        WHERE u.settlement_month = ?
-        ORDER BY t.test_name
-    """, conn, params=(usage_view_month,))
+        {"" if usage_all else "WHERE u.settlement_month = ?"}
+        ORDER BY {"u.settlement_month DESC, " if usage_all else ""}t.test_name
+    """, conn, params=() if usage_all else (usage_view_month,))
     df_usage.insert(0, "삭제", False)
 
     # 편집표 키에 연월을 넣어, 달을 바꾸면 이전 달에서 하던 편집이 새 달의 같은 줄에 붙지 않게 한다.
@@ -5075,13 +5079,14 @@ with tab2:
         df_usage,
         width="stretch",
         hide_index=True,
-        disabled=["ID", "시험군", "품목명", "산출총액"],
+        disabled=["ID", "시험군", "품목명", "산출총액", *(["정산연월"] if usage_all else [])],
         num_rows="fixed",  # 행 추가는 위 등록 폼으로만, 삭제는 '삭제' 체크박스로
         key=usage_editor_key,
         column_config={
             "삭제": st.column_config.CheckboxColumn("삭제", width=50),
             "ID": None,
-            "정산연월": None,  # 위 '조회 연월'과 같은 값만 반복되므로 숨김
+            # 한 달만 볼 때는 위 '조회 연월'과 같은 값만 반복되므로 숨기고, 전체를 볼 때만 보여 준다.
+            "정산연월": st.column_config.TextColumn("정산연월", width="small") if usage_all else None,
             "사용량": st.column_config.NumberColumn(format="localized", alignment="right", width="small"),
             "적용단가": st.column_config.NumberColumn("적용단가 (원)", format="localized", alignment="right"),
             "산출총액": st.column_config.NumberColumn("산출총액 (원)", format="localized", alignment="right", step=1),
