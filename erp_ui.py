@@ -4636,11 +4636,12 @@ with tab0:
         with sc1:
             sc_month = st.selectbox("📅 조사 월", sc_months, index=sc_months.index(prev_m), key="stock_count_month")
         with sc2:
-            sc_farm_label = st.text_input("농장 표기", value=default_farm_label, key="stock_count_farm_label")
+            # 입력칸 키에 농장 이름을 넣어, 농장을 바꿨을 때 앞 농장에서 쓰던 값(예: 농장 표기)이 따라오지 않게 한다.
+            sc_farm_label = st.text_input("농장 표기", value=default_farm_label, key=f"stock_count_farm_label_{selected_farm}")
         with sc3:
-            sc_examiner = st.text_input("조사자", value="대리 배성태", key="stock_count_examiner")
+            sc_examiner = st.text_input("조사자", value="대리 배성태", key=f"stock_count_examiner_{selected_farm}")
         with sc4:
-            sc_witness = st.text_input("입회자", value="팀장 신민석", key="stock_count_witness")
+            sc_witness = st.text_input("입회자", value="팀장 신민석", key=f"stock_count_witness_{selected_farm}")
 
         sc_rows = stock_count_rows(DB_FILE, sc_month)
         sc_view = sc_rows.drop(columns=["코드"]).copy()
@@ -5103,11 +5104,12 @@ with tab2:
         default_ca_label = f"{_fm.group(1)}({_fm.group(2)})시험농장" if _fm else selected_farm.replace("농장", "시험농장")
         ca1, ca2, ca3 = st.columns([1, 1, 2])
         with ca1:
-            ca_farm_label = st.text_input("농장 표기", value=default_ca_label, key="cost_alloc_farm_label")
+            # 입력칸 키에 농장 이름을 넣어, 농장을 바꿨을 때 앞 농장의 제목(농장 표기)이 따라오지 않게 한다.
+            ca_farm_label = st.text_input("농장 표기", value=default_ca_label, key=f"cost_alloc_farm_label_{selected_farm}")
         with ca2:
-            ca_writers = st.text_input("작성자 (쉼표로 구분)", value="신민석, 배성태, 이상욱", key="cost_alloc_writers")
+            ca_writers = st.text_input("작성자 (쉼표로 구분)", value="신민석, 배성태, 이상욱", key=f"cost_alloc_writers_{selected_farm}")
         with ca3:
-            ca_diff_note = st.text_input("차액분 메모", placeholder="차액이 있으면 사유를 적으세요", key="cost_alloc_diff_note")
+            ca_diff_note = st.text_input("차액분 메모", placeholder="차액이 있으면 사유를 적으세요", key=f"cost_alloc_diff_note_{selected_farm}")
         ca_actual = st.session_state.get(f"_stock_actual_{cost_month}")
         ca_heads, _, _ = _cost_alloc_headers(ca_groups, cost_month)
         ca_vals = _cost_alloc_values(ca_rows, len(ca_groups), ca_actual)
