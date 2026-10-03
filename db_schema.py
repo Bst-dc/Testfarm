@@ -129,6 +129,14 @@ CREATE TABLE IF NOT EXISTS feed_stock_check (
     PRIMARY KEY (zone_name, check_date)
 );
 
+-- 위탁농장 월말 점검표: 달마다 점검횟수·위탁사육자·항목별 평점과 평가이유(items, JSON)
+CREATE TABLE IF NOT EXISTS inspection_sheet (
+    sheet_month TEXT PRIMARY KEY,
+    inspect_count INTEGER,
+    farmer TEXT,
+    items TEXT
+);
+
 CREATE TRIGGER IF NOT EXISTS trg_after_insert_purchase
 AFTER INSERT ON purchase
 FOR EACH ROW
@@ -179,5 +187,5 @@ PG_DDL = re.sub(
 DB_TABLES = [
     "testgroup_master", "cattle", "item_master", "disease_record", "purchase",
     "monthly_usage", "monthly_fixedcost", "cattle_cost_log", "cattle_item_usage_log",
-    "feed_zone", "feed_schedule", "feed_stock_check",
+    "feed_zone", "feed_schedule", "feed_stock_check", "inspection_sheet",
 ]

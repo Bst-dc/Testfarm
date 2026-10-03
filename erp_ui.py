@@ -2521,6 +2521,158 @@ def feed_stock_excel(blocks, farm_name):
     return buf.getvalue()
 
 
+# ========== 위탁농장 점검표 (월말, 인쇄용) ==========
+# 회사 한글 양식 '구미 ○○시험농장 점검표 (24.1월.양식)' 과 같은 칸 구성. 평점·평가이유만 매달 입력한다.
+# (키, 대분류, 점검사항, 점검 기준 메모, 배점, [(점수분포, 평가방법)], 평가방법 아래 메모)
+INSPECTION_ITEMS = [
+    ("feed", "사양관리", "사양프로그램 준수", "※사료 급여량 및\n사양시험 이행상태", 30,
+     [("30", "• 전반적 양호"),
+      ("20~29", "• 프로그램과 급이량 차이(1kg 이하) 및\n사양시험 준수 대체로 양호"),
+      ("10~19", "• 프로그램과 급이량 차이(1kg 초과) 및\n사양시험 준수 대체로 불량"),
+      ("1~9", "• 전반적 불량(2kg초과 ~ 3kg미만)"),
+      ("0", "• 매우 불량(3kg초과)")],
+     "※ 조사료 및 개체별 사료섭취 상태 불량에 따른 급여량 저하는 배제함"),
+    ("record", "사양관리", "대장기록\n(사료,조사료,진료 등)", "※기록기장상태", 5,
+     [("5", "• 전반적 양호"), ("3~4", "• 일부 미기장(5일 이내)"),
+      ("1~2", "• 일부 미기장(5일 초과)"), ("0", "• 전반적 불량(대장 분실 등)")], ""),
+    ("quarantine", "사양관리", "방역관리", "※정기적인 소독여부", 5,
+     [("5", "• 월 2회 이상 우사 전체 소독"), ("3~4", "• 월 1회 우사 전체 소독"),
+      ("1~2", "• 농장입구 소독약(생석회 등) 살포"), ("0", "• 농장입구 및 우사전체 방역활동 없음")], ""),
+    ("trough", "사양관리", "사료조 청결", "※사료조 청결여부", 5,
+     [("5", "• 항상 청결"), ("3~4", "• 대체적으로 청결"), ("1~2", "• 대체적으로 불량"), ("0", "• 매우 불량")], ""),
+    ("water", "사양관리", "급수조 청결", "※급수기 청소상태", 5,
+     [("5", "• 항상 청결"), ("3~4", "• 불순물 약간 있으나 섭취에는 이상없음"),
+      ("1~2", "• 50%이상 급수조에서 불순물 다발"), ("0", "• 매우 불량")], ""),
+    ("floor", "바닥관리", "바닥상태", "※바닥 청결정도", 30,
+     [("30", "• 항상 청결"), ("20~29", "• 우분 등 소 몸체에 약간 묻을 정도"),
+      ("10~19", "• 우분 등 소 몸체에 다량 묻을 정도"), ("1~9", "• 일부분 바닥에서 우분이 튀길 정도"),
+      ("0", "• 전체 바닥에서 우분이 튀길 정도")], ""),
+    ("coop", "담당자\n평가", "업무협조", "", 5,
+     [("5", "• 매우 양호"), ("3~4", "• 전반적 양호(지시사항 다소 불이행)"),
+      ("1~2", "• 전반적 불량(지시사항 대체로 불이행)"), ("0", "• 매우 불량")], ""),
+    ("overall", "담당자\n평가", "종합평가\n(인)", "", 15,
+     [("15", "• 가축의 성장에 매우 양호"), ("10~14", "• 가축의 성장에 대체로 양호"),
+      ("5~9", "• 가축의 성장에는 보통의 환경"), ("1~4", "• 가축의 성장에 대체로 불량"),
+      ("0", "• 가축의 성장에 저해")], ""),
+]
+
+
+def load_inspection(conn, month):
+    """그 달 점검표 {'inspect_count', 'farmer', 'items': {키: {'score', 'reason'}}} — 없으면 None."""
+    r = conn.execute("SELECT inspect_count, farmer, items FROM inspection_sheet WHERE sheet_month = ?", (month,)).fetchone()
+    if not r:
+        return None
+    try:
+        items = json.loads(r[2] or "{}")
+    except ValueError:
+        items = {}
+    return {"inspect_count": r[0], "farmer": r[1] or "", "items": items}
+
+
+def save_inspection(db_file, month, inspect_count, farmer, items):
+    conn = db_connect(db_file)
+    try:
+        conn.execute("DELETE FROM inspection_sheet WHERE sheet_month = ?", (month,))
+        conn.execute("INSERT INTO inspection_sheet (sheet_month, inspect_count, farmer, items) VALUES (?, ?, ?, ?)",
+                     (month, int(inspect_count), farmer, json.dumps(items, ensure_ascii=False)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def generate_inspection_sheet(month, farm_label, inspect_count, farmer, items):
+    """점검표 인쇄용 HTML (A4 세로 한 장)."""
+    esc = lambda v: html.escape("" if v is None else str(v))
+    br = lambda v: esc(v).replace("\n", "<br>")
+    _, end, _ = _month_bounds(month)
+    y, m, d = end.split("-")
+    spaced_farmer = " ".join(farmer.replace(" ", "")) if farmer else ""
+
+    def reason_html(text):
+        # 원본 양식처럼 첫 줄 앞에만 • 를 붙인다 (다음 줄은 이어 쓰기). 여러 항목은 줄 앞에 • 를 직접 쓰면 된다.
+        lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+        if lines and not lines[0].startswith("•"):
+            lines[0] = "• " + lines[0]
+        return "<br>".join(esc(ln) for ln in lines)
+
+    rows, total = [], 0
+    cats = [it[1] for it in INSPECTION_ITEMS]
+    for idx, (key, cat, name, crit, full, bands, note) in enumerate(INSPECTION_ITEMS):
+        v = items.get(key, {})
+        score = v.get("score")
+        total += float(score or 0)
+        span = len(bands) + (1 if note else 0)
+        cat_span = sum(len(it[5]) + (1 if it[6] else 0) for it in INSPECTION_ITEMS if it[1] == cat)
+        for b, (dist, desc) in enumerate(bands):
+            cells = ""
+            if b == 0:
+                if idx == 0 or cats[idx - 1] != cat:
+                    cells += f'<td class="cat" rowspan="{cat_span}">{br(cat)}</td>'
+                item_txt = f'<b>{br(name)}</b>' + (f'<div class="crit">{br(crit)}</div>' if crit else "")
+                cells += (f'<td class="item" rowspan="{span}">{item_txt}</td>'
+                          f'<td class="c" rowspan="{span}">{full}</td>'
+                          f'<td class="c score" rowspan="{span}">{"" if score is None else f"{float(score):g}"}</td>')
+            cells += f'<td class="c dist">{esc(dist)}</td><td class="desc">{br(desc)}</td>'
+            if b == 0:
+                cells += (f'<td class="reason" rowspan="{span}">{reason_html(v.get("reason"))}</td>'
+                          f'<td rowspan="{span}"></td>')
+            rows.append(f"<tr>{cells}</tr>")
+        if note:
+            rows.append(f'<tr><td class="note" colspan="2">{esc(note)}</td></tr>')
+    rows.append(f'<tr class="total"><td colspan="2">합 계</td><td class="c">100</td>'
+                f'<td class="c score">{total:g}</td><td colspan="4"></td></tr>')
+
+    title = f"[{farm_label} 점검표]"
+    css = """
+@page { size: A4 portrait; margin: 12mm 12mm; }
+* { box-sizing: border-box; }
+body { font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; color: #111; margin: 0; background: #f3f4f6; font-size: 11px; }
+.sheet { max-width: 800px; margin: 16px auto; background: #fff; padding: 24px 26px; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+h1 { text-align: center; font-size: 22px; margin: 0 0 8px; letter-spacing: 1px; }
+.top { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8px; }
+.top .info { font-size: 13px; line-height: 2; }
+table.sign { border-collapse: collapse; }
+table.sign td { border: 1px solid #111; text-align: center; padding: 3px 4px; width: 62px; font-size: 12px; }
+table.sign td.lbl { width: 26px; line-height: 1.5; }
+table.sign tr.box td { height: 46px; }
+table.main { width: 100%; border-collapse: collapse; table-layout: fixed; }
+table.main th, table.main td { border: 1px solid #111; padding: 2px 5px; vertical-align: middle; line-height: 1.3; }
+table.main th { background: #f2f2f2; font-weight: 700; text-align: center; }
+td.c { text-align: center; }
+td.cat { text-align: center; font-weight: 700; line-height: 1.5; }
+td.item { text-align: center; line-height: 1.45; }
+td.item .crit { font-size: 10.5px; color: #333; margin-top: 3px; }
+td.score { font-weight: 700; font-size: 13px; }
+td.dist { white-space: nowrap; }
+td.desc { line-height: 1.35; }
+td.reason { line-height: 1.5; }
+td.note { font-size: 10.5px; }
+tr.total td { font-weight: 800; text-align: center; background: #f7f7f7; }
+.toolbar { max-width: 800px; margin: 12px auto 0; text-align: right; }
+.toolbar button { font-size: 14px; padding: 8px 18px; border: 0; border-radius: 8px; background: #2E6B57; color: #fff; cursor: pointer; }
+@media print { body { background: #fff; } .sheet { box-shadow: none; margin: 0; max-width: none; padding: 0; } .toolbar { display: none; } }
+"""
+    return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(farm_label)} 점검표 {esc(month)}</title>
+<style>{css}</style></head><body>
+<div class="toolbar"><button onclick="window.print()">🖨️ 인쇄 / PDF 저장</button></div>
+<div class="sheet">
+<h1>{esc(title)}</h1>
+<div class="top">
+  <div class="info">▣ 위탁사육자 : {esc(spaced_farmer)}<br>▣ 점검횟수 : {int(inspect_count)}회 ({y[2:]}년 {m}월 {d}일 기준)</div>
+  <table class="sign"><tr><td class="lbl" rowspan="2">결<br>재</td><td>계원</td><td>팀장</td><td>부장</td><td>본부장</td></tr>
+  <tr class="box"><td></td><td></td><td></td><td></td></tr></table>
+</div>
+<table class="main">
+<colgroup><col style="width:8%"><col style="width:15%"><col style="width:6%"><col style="width:6%">
+<col style="width:8%"><col style="width:29%"><col style="width:20%"><col style="width:8%"></colgroup>
+<thead><tr><th colspan="2" rowspan="2">점검사항</th><th colspan="2">점수</th><th colspan="2">평가방법</th>
+<th rowspan="2">평가이유</th><th rowspan="2">비고</th></tr>
+<tr><th>배점</th><th>평점</th><th colspan="2">점수분포</th></tr></thead>
+<tbody>{''.join(rows)}</tbody></table>
+</div></body></html>"""
+
+
 def list_accounting_months(db_file):
     """매입·사용량·고정비·정산·입식·종결 중 하나라도 있는 연월 (최신순)."""
     conn = db_connect(db_file)
@@ -3258,7 +3410,7 @@ kpi_cols[3].metric("평균 개월령", avg_months_str,
                    delta="사육중 개체 기준", delta_color="off", delta_arrow="off")
 st.write("")
 
-tab_cattle, tab1, tab0, tab2, tab_settle, tab_report, tab_slaughter = st.tabs(["🐂 개체 관리", "📊 사육 및 재고 현황", "📦 품목·매입 관리", "💰 월말 등록", "🚀 월말 정산", "🧾 결산 리포트", "🥩 도축 성적"])
+tab_cattle, tab1, tab0, tab2, tab_settle, tab_report, tab_slaughter, tab_inspect = st.tabs(["🐂 개체 관리", "📊 사육 및 재고 현황", "📦 품목·매입 관리", "💰 월말 등록", "🚀 월말 정산", "🧾 결산 리포트", "🥩 도축 성적", "📝 점검표"])
 
 # ===== 개체 관리 탭 =====
 with tab_cattle:
@@ -5987,5 +6139,81 @@ with tab_slaughter:
         '</div></div>',
         unsafe_allow_html=True,
     )
+
+with tab_inspect:
+    st.subheader("📝 위탁농장 점검표")
+    st.caption("매달 월말에 항목별 **평점**과 **평가이유**를 입력하고 저장하면, 회사 점검표 양식으로 인쇄할 수 있습니다. "
+               "처음 여는 달은 바로 전에 저장한 달의 내용으로 미리 채워집니다 (저장해야 그 달 기록이 됩니다).")
+    now_i = datetime.now()
+    insp_prev = f"{now_i.year - 1}-12" if now_i.month == 1 else f"{now_i.year}-{now_i.month - 1:02d}"
+    insp_saved = [r[0] for r in conn.execute("SELECT sheet_month FROM inspection_sheet ORDER BY sheet_month DESC").fetchall()]
+    insp_recent = []
+    yy, mm = now_i.year, now_i.month
+    for _ in range(13):
+        insp_recent.append(f"{yy}-{mm:02d}")
+        yy, mm = (yy - 1, 12) if mm == 1 else (yy, mm - 1)
+    insp_months = sorted(set(insp_recent) | set(insp_saved), reverse=True)
+    ic1, ic2, ic3, ic4 = st.columns([1, 1, 1, 1])
+    with ic1:
+        insp_month = st.selectbox("📅 점검 월", insp_months, index=insp_months.index(insp_prev),
+                                  format_func=lambda m_: f"{m_}  (저장됨)" if m_ in insp_saved else m_,
+                                  key="insp_month")
+    saved_sheet = load_inspection(conn, insp_month)
+    base_sheet, base_note = saved_sheet, ""
+    if base_sheet is None:
+        earlier = [m_ for m_ in insp_saved if m_ < insp_month]
+        if earlier:
+            base_sheet = load_inspection(conn, earlier[0])
+            base_note = f"아직 저장하지 않은 달입니다. {earlier[0]} 점검표 내용으로 미리 채웠습니다."
+        else:
+            base_note = "아직 저장하지 않은 달입니다."
+    base_sheet = base_sheet or {"inspect_count": 2, "farmer": "", "items": {}}
+    default_label = selected_farm if "시험" in selected_farm else selected_farm.replace("농장", "시험농장")
+    ik = f"insp_{selected_farm}_{insp_month}_"
+    with ic2:
+        insp_label = st.text_input("농장 표기", value=default_label, key=ik + "label")
+    with ic3:
+        insp_farmer = st.text_input("위탁사육자", value=base_sheet["farmer"], key=ik + "farmer", placeholder="예: 김성해")
+    with ic4:
+        insp_count = st.number_input("점검횟수 (회)", min_value=0, max_value=31, step=1,
+                                     value=int(base_sheet["inspect_count"] or 2), key=ik + "count")
+    if base_note:
+        st.info(base_note)
+
+    insp_values = {}
+    head = st.columns([2.2, 1, 5])
+    head[0].markdown("**점검사항 (배점)**"); head[1].markdown("**평점**"); head[2].markdown("**평가이유**")
+    for key, cat, name, crit, full, bands, note in INSPECTION_ITEMS:
+        prev = base_sheet["items"].get(key, {})
+        row = st.columns([2.2, 1, 5])
+        with row[0]:
+            st.markdown(f"**{name.replace(chr(10), ' ')}** ({full}점)")
+            st.caption(" · ".join(f"{dist}: {desc.lstrip('• ').replace(chr(10), ' ')}" for dist, desc in bands[:2]) + " …")
+        with row[1]:
+            sc = st.number_input("평점", min_value=0, max_value=full, step=1, label_visibility="collapsed",
+                                 value=None if prev.get("score") is None else int(prev["score"]), key=ik + key + "_score")
+        with row[2]:
+            rs = st.text_area("평가이유", value=prev.get("reason", ""), height=68, label_visibility="collapsed",
+                              placeholder="예: 정기적인 급수조 청소 (첫 줄 앞에 • 가 자동으로 붙습니다)", key=ik + key + "_reason")
+        insp_values[key] = {"score": sc, "reason": rs}
+
+    insp_total = sum(float(v["score"] or 0) for v in insp_values.values())
+    missing = [it[2].split(chr(10))[0] for it in INSPECTION_ITEMS if insp_values[it[0]]["score"] is None]
+    st.markdown(f"#### 합계 **{insp_total:g}점** / 100점")
+    if missing:
+        st.caption("평점이 비어 있는 항목: " + ", ".join(missing))
+    sb1, sb2 = st.columns(2)
+    if sb1.button("💾 점검표 저장", type="primary", width="stretch", key=ik + "save"):
+        save_inspection(DB_FILE, insp_month, insp_count, insp_farmer.strip(), insp_values)
+        notify(f"{insp_month} 점검표 저장 (합계 {insp_total:g}점)", icon="✅")
+        st.rerun()
+    insp_html = generate_inspection_sheet(insp_month, insp_label, insp_count, insp_farmer.strip(), insp_values)
+    sb2.download_button("🖨️ 인쇄용 파일 내려받기 (HTML)", insp_html.encode("utf-8"),
+                        file_name=f"점검표_{selected_farm}_{insp_month}.html", mime="text/html",
+                        width="stretch", key=ik + "dl")
+    st.caption("저장하지 않아도 지금 입력한 내용으로 인쇄 파일이 만들어집니다. 파일을 열어 '🖨️ 인쇄 / PDF 저장'을 누르면 A4로 인쇄됩니다.")
+    with st.expander("인쇄 미리보기", expanded=False):
+        st.iframe(insp_html, height=1100)
+
 
 conn.close()
