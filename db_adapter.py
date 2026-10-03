@@ -12,6 +12,7 @@ erp_ui.py 는 원래 SQLite 전용으로 작성되어 있어서, 여기서 SQLit
 - 연결은 매번 새로 맺지 않고 재사용한다(Supabase 는 연결 한 번에 수백 ms 가 걸린다).
 """
 import datetime
+import hashlib
 import math
 import os
 import re
@@ -312,6 +313,10 @@ _exists = set()  # cattle 표가 있다고 확인된 스키마
 # 이 프로세스에서 이미 표 구조를 점검한 스키마. Streamlit 은 클릭마다 erp_ui.py 를 처음부터 다시 실행하므로
 # 이 기록은 앱 쪽이 아니라 (다시 실행되지 않는) 이 모듈에 둬야 한다.
 _ensured = set()
+# ensure_schema 가 점검을 마친 (스키마, 스키마 정의 서명). Streamlit Cloud 는 새 코드를 받아도 프로세스를 다시 띄우지 않고
+# erp_ui.py 만 다시 읽는 경우가 있어서, 스키마 이름만 기억하면 새로 추가한 표를 만들지 않고 넘어간다.
+# 정의(DDL·필요한 표·컬럼)가 바뀌면 서명이 달라져 한 번 더 점검한다.
+_ensured_defs = set()
 
 
 def _is_read(sql):
@@ -651,7 +656,9 @@ def ensure_schema(db_file, ddl, extra_sql=(), required_tables=(), required_colum
     실행할 때도 잠금은 DDL_LOCK_TIMEOUT 까지만 기다린다. 기다리다 실패하면(표는 이미 있으니) 이번에는
     건너뛰고 다음 실행 때 다시 점검한다 — 화면이 멈추거나 오류로 끝나지 않게."""
     schema = schema_for(db_file)
-    if schema in _ensured:
+    sig = hashlib.md5(repr((ddl, list(extra_sql), list(required_tables), list(required_columns),
+                            list(required_triggers))).encode("utf-8")).hexdigest()
+    if (schema, sig) in _ensured_defs:
         return
     raw = _raw_connection()
     try:
@@ -660,6 +667,7 @@ def ensure_schema(db_file, ddl, extra_sql=(), required_tables=(), required_colum
                 raw.rollback()
                 _exists.add(schema)
                 _ensured.add(schema)
+                _ensured_defs.add((schema, sig))
                 return
             c.execute("SET LOCAL lock_timeout = '%s'" % DDL_LOCK_TIMEOUT)
             _run_ddl(c, schema, ddl, drop_first=False)
@@ -669,6 +677,7 @@ def ensure_schema(db_file, ddl, extra_sql=(), required_tables=(), required_colum
         invalidate(schema)
         _exists.add(schema)
         _ensured.add(schema)
+        _ensured_defs.add((schema, sig))
     except psycopg2.Error as e:
         raw.rollback()
         if getattr(e, "pgcode", None) == "55P03" and database_exists(db_file):  # lock_not_available
