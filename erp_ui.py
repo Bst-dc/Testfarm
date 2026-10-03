@@ -2204,14 +2204,32 @@ def _cost_alloc_headers(groups, month):
     return heads, f"{y}.{m}.{d}", f"{y}년 {m}월"
 
 
+def _round_keep_total(values):
+    """소수가 있는 값들을 정수로 만들되 합계는 (반올림한) 원래 합계와 같게 맞춘다 (최대 나머지 방식).
+    예: [930.23, 61.76, 2148.01] (합 3140) → [930, 62, 2148]"""
+    target = int(round(sum(values)))
+    floors = [int(v // 1) for v in values]
+    left = target - sum(floors)
+    order = sorted(range(len(values)), key=lambda i: values[i] - floors[i], reverse=True)
+    for i in order[:max(left, 0)]:
+        floors[i] += 1
+    return floors
+
+
 def _cost_alloc_values(rows, n_groups, actual):
-    """줄마다 [시험군들.., F, G, H, I, J, K, L]. actual: {품목코드: 실 재고량} (없으면 I - F)."""
+    """줄마다 [시험군들.., F, G, H, I, J, K, L]. actual: {품목코드: 실 재고량} (없으면 I - F).
+    시험군별 사용량은 일할 배분 때문에 소수가 생기므로 인쇄물에서는 정수로 바꾸고,
+    시험군 합계(F)가 원가배부량(K)과 맞도록 합계를 지켜 반올림한다. 다른 칸도 정수로 맞춘다."""
     out = []
     for r in rows.to_dict("records"):
+        per = _round_keep_total([float(r[f"g{i}"]) for i in range(n_groups)]) if n_groups else []
+        f = sum(per) if n_groups else int(round(r["F"]))
+        g, h = int(round(r["G"])), int(round(r["H"]))
+        i_ = g + h
         j = actual.get(r["코드"]) if actual else None
-        j = r["I"] - r["F"] if j is None or pd.isna(j) else float(j)
-        k = r["I"] - j
-        out.append([r[f"g{i}"] for i in range(n_groups)] + [r["F"], r["G"], r["H"], r["I"], j, k, k - r["F"]])
+        j = i_ - f if j is None or pd.isna(j) else int(round(float(j)))
+        k = i_ - j
+        out.append(per + [f, g, h, i_, j, k, k - f])
     return out
 
 
@@ -4723,12 +4741,22 @@ with tab2:
         if groups_df.empty or items_df2.empty:
             st.info("시험군 또는 품목이 등록되어 있지 않습니다.")
         else:
-            group_options = {f"{r['test_name']} ({r['test_group_code']})": r['test_group_code'] for _, r in groups_df.iterrows()}
-            
+            # 선택지 이름: '고아농장 (시험군 이름)'. 시험군 코드와 이름이 같은 농장이 많아
+            # 예전처럼 '이름 (코드)' 로 보이면 같은 글자가 두 번 나왔다. 이름이 겹치는 시험군만 코드를 덧붙인다.
+            farm_short = re.sub(r"^구미", "", selected_farm)
+            name_counts = groups_df['test_name'].value_counts()
+            group_options = {
+                (f"{farm_short} ({r['test_name']})" if name_counts[r['test_name']] == 1
+                 else f"{farm_short} ({r['test_name']} · {r['test_group_code']})"): r['test_group_code']
+                for _, r in groups_df.iterrows()
+            }
+
             usage_month = cost_month  # 탭 맨 위의 공통 정산연월
 
-            if "usage_groups_sel" not in st.session_state:
-                st.session_state["usage_groups_sel"] = list(group_options.keys())[:1]
+            # 선택지 이름이 바뀌었거나 시험군이 지워졌으면, 없는 선택지는 빼고 시작한다 (없는 값이 남아 있으면 오류).
+            kept_sel = [l for l in st.session_state.get("usage_groups_sel", []) if l in group_options]
+            if "usage_groups_sel" not in st.session_state or len(kept_sel) != len(st.session_state["usage_groups_sel"]):
+                st.session_state["usage_groups_sel"] = kept_sel or list(group_options.keys())[:1]
             usage_group_labels = st.multiselect(
                 "시험군 (여러 개 선택 가능)", list(group_options.keys()), key="usage_groups_sel",
                 help="여러 시험군을 고르면 입력한 사용량을 그 달 시험군별 사육일수(두수×일수) 비율로 나눠 등록합니다.",
