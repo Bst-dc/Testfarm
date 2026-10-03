@@ -1967,6 +1967,172 @@ def generate_accounting_sheet(db_file, farm_name, month):
     return True, page
 
 
+# ========== 재고조사표 (월말 실사용, 인쇄용) ==========
+# 회사에서 쓰던 엑셀 양식(재고조사표)과 같은 칸 구성:
+#   A 전 재고조사일 기준 재고량 / B 그 뒤 매입량 / C = A + B 원가배부 전 장부상 재고량 /
+#   D 기준일 실 재고량 / E = C - D 급여량(원가배부량)
+# 첫 줄은 '한우위탁우'(두수): A 전월말 사육두수, B 이 달 입식, D 이 달 말 사육두수, E 출하·폐사.
+STOCK_COUNT_CATTLE_LABEL = "한우위탁우"
+
+
+def _month_bounds(month):
+    """'2026-09' → ('2026-09-01', '2026-09-30', '2026-08-31')"""
+    import calendar
+    y, m = int(month[:4]), int(month[5:7])
+    last = calendar.monthrange(y, m)[1]
+    py, pm = (y - 1, 12) if m == 1 else (y, m - 1)
+    prev_last = calendar.monthrange(py, pm)[1]
+    return f"{month}-01", f"{month}-{last:02d}", f"{py:04d}-{pm:02d}-{prev_last:02d}"
+
+
+def stock_count_rows(db_file, month):
+    """재고조사표 줄 목록. D(실 재고량)는 장부상 값(C - 이 달 등록 사용량)으로 미리 채워 둔다.
+    반환: DataFrame [코드, 상품명, 규격, A, B, C, 등록사용량, D]"""
+    start, end, prev_end = _month_bounds(month)
+    conn = db_connect(db_file)
+    try:
+        alive = "(closure_date IS NULL OR closure_date = '' OR closure_date > ?)"
+        head_a = conn.execute(f"SELECT COUNT(*) FROM cattle WHERE COALESCE(admission_date, '') <= ? AND {alive}",
+                              (prev_end, prev_end)).fetchone()[0]
+        head_b = conn.execute("SELECT COUNT(*) FROM cattle WHERE admission_date >= ? AND admission_date <= ?",
+                              (start, end)).fetchone()[0]
+        head_d = conn.execute(f"SELECT COUNT(*) FROM cattle WHERE COALESCE(admission_date, '') <= ? AND {alive}",
+                              (end, end)).fetchone()[0]
+        items = pd.read_sql("""
+            SELECT i.item_code, i.item_name, i.unit,
+              COALESCE((SELECT SUM(quantity) FROM purchase p WHERE p.item_code = i.item_code AND p.purchase_date < ?), 0)
+            - COALESCE((SELECT SUM(total_usage) FROM monthly_usage u WHERE u.item_code = i.item_code AND u.settlement_month < ?), 0) AS a,
+              COALESCE((SELECT SUM(quantity) FROM purchase p WHERE p.item_code = i.item_code AND p.purchase_date >= ? AND p.purchase_date <= ?), 0) AS b,
+              COALESCE((SELECT SUM(total_usage) FROM monthly_usage u WHERE u.item_code = i.item_code AND u.settlement_month = ?), 0) AS used
+            FROM item_master i
+        """, conn, params=(start, month, start, end, month))
+    finally:
+        conn.close()
+
+    rows = [{"코드": "_cattle", "상품명": STOCK_COUNT_CATTLE_LABEL, "규격": "두",
+             "A": float(head_a), "B": float(head_b), "C": float(head_a + head_b),
+             "등록사용량": float(head_a + head_b - head_d), "D": float(head_d)}]
+    for c in ("a", "b", "used"):
+        items[c] = pd.to_numeric(items[c], errors="coerce").fillna(0).astype(float)
+    items = items[(items["a"].abs() > 0.005) | (items["b"].abs() > 0.005) | (items["used"].abs() > 0.005)].copy()
+    # 등록한 순서(품목코드 번호순)대로 — 회사 양식과 같은 순서
+    items["_n"] = items["item_code"].map(lambda c: int("".join(filter(str.isdigit, str(c))) or 0))
+    for r in items.sort_values(["_n", "item_code"]).itertuples(index=False):
+        c = r.a + r.b
+        rows.append({"코드": r.item_code, "상품명": r.item_name, "규격": r.unit or "",
+                     "A": r.a, "B": r.b, "C": c, "등록사용량": r.used, "D": c - r.used})
+    return pd.DataFrame(rows)
+
+
+def _stock_qty(v):
+    """0 은 '-', 정수는 콤마, 소수는 둘째 자리까지."""
+    if v is None or pd.isna(v) or abs(float(v)) < 0.005:
+        return "-"
+    return f"{float(v):,.2f}".rstrip("0").rstrip(".")
+
+
+STOCK_COUNT_CSS = """
+@page { size: A4 portrait; margin: 12mm 10mm; }
+* { box-sizing: border-box; }
+body { font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; color: #111; margin: 0; background: #f3f4f6; font-size: 13px; }
+.sheet { max-width: 900px; margin: 16px auto; background: #fff; padding: 24px 26px; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+h1 { text-align: center; font-size: 24px; letter-spacing: 1px; margin: 0 0 6px; font-weight: 700; }
+.date { text-align: center; margin: 0 0 14px; }
+.sign { text-align: right; line-height: 2; margin-bottom: 6px; font-size: 14px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { border: 1px solid #111; padding: 5px 6px; }
+th { background: #f2f2f2; font-weight: 600; text-align: center; line-height: 1.35; }
+td.c { text-align: center; }
+td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+thead { display: table-header-group; }
+tr { page-break-inside: avoid; }
+.toolbar { max-width: 900px; margin: 12px auto 0; text-align: right; }
+.toolbar button { font-size: 14px; padding: 8px 18px; border: 0; border-radius: 8px; background: #2E6B57; color: #fff; cursor: pointer; }
+@media print {
+  body { background: #fff; }
+  .sheet { box-shadow: none; margin: 0; max-width: none; padding: 0; }
+  .toolbar { display: none; }
+}
+"""
+
+
+def _stock_count_titles(month, farm_label):
+    _, end, _ = _month_bounds(month)
+    y, m, d = end.split("-")
+    return (f"{y}년 {m}월 재고조사표({farm_label})", f"{y}.{m}.{d}.", f"{m}월 {d}일 기준")
+
+
+def generate_stock_count_sheet(rows, month, farm_label, examiner, witness):
+    """재고조사표 인쇄용 HTML. rows 는 stock_count_rows() 결과에 D(실 재고량)를 확정한 것."""
+    esc = lambda v: html.escape("" if v is None else str(v))
+    title, base_date, day_label = _stock_count_titles(month, farm_label)
+    body_rows = []
+    for i, r in enumerate(rows.itertuples(index=False), start=1):
+        body_rows.append(
+            f'<tr><td class="c">{i}</td><td>{esc(r.상품명)}</td><td class="c">{esc(r.규격)}</td>'
+            f'<td class="n">{_stock_qty(r.A)}</td><td class="n">{_stock_qty(r.B)}</td><td class="n">{_stock_qty(r.C)}</td>'
+            f'<td class="n">{_stock_qty(r.D)}</td><td class="n">{_stock_qty(r.C - r.D)}</td><td></td></tr>')
+    return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(title)}</title>
+<style>{STOCK_COUNT_CSS}</style></head><body>
+<div class="toolbar"><button onclick="window.print()">🖨️ 인쇄 / PDF 저장</button></div>
+<div class="sheet">
+<h1>{esc(title)}</h1>
+<p class="date">(기준일 : {base_date})</p>
+<div class="sign">조사자 : {esc(examiner)} &nbsp;(인)<br>입회자 : {esc(witness)} &nbsp;(인)</div>
+<table><thead><tr>
+<th style="width:5%">순번</th><th>상품명</th><th style="width:6%">규격</th>
+<th style="width:12%">전 재고조사일<br>기준 재고량<br>(A)</th>
+<th style="width:12%">전 재고조사일<br>이후 매입량<br>(B)</th>
+<th style="width:14%">{esc(day_label)}<br>원가배부 전<br>장부상 재고량<br>(C = A + B)</th>
+<th style="width:12%">{esc(day_label)}<br>실 재고량<br>(D)</th>
+<th style="width:12%">급여량<br>(원가배부량)<br>(E = C − D)</th>
+<th style="width:7%">비고</th>
+</tr></thead><tbody>{''.join(body_rows)}</tbody></table>
+</div></body></html>"""
+
+
+def stock_count_excel(rows, month, farm_label, examiner, witness):
+    """재고조사표 엑셀(.xlsx) — 회사 양식과 같은 칸 배치."""
+    title, base_date, day_label = _stock_count_titles(month, farm_label)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as xw:
+        wb = xw.book
+        ws = wb.add_worksheet("재고조사표")
+        f_title = wb.add_format({"bold": True, "font_size": 18, "align": "center", "valign": "vcenter"})
+        f_center = wb.add_format({"align": "center"})
+        f_right = wb.add_format({"align": "right"})
+        f_head = wb.add_format({"bold": True, "align": "center", "valign": "vcenter", "text_wrap": True,
+                                "border": 1, "bg_color": "#F2F2F2"})
+        f_txt = wb.add_format({"border": 1})
+        f_ctr = wb.add_format({"border": 1, "align": "center"})
+        f_num = wb.add_format({"border": 1, "num_format": '#,##0.##;-#,##0.##;"-"'})
+        ws.set_column(0, 0, 6); ws.set_column(1, 1, 20); ws.set_column(2, 2, 7)
+        ws.set_column(3, 7, 15); ws.set_column(8, 8, 8)
+        ws.merge_range(0, 0, 0, 8, title, f_title)
+        ws.set_row(0, 30)
+        ws.merge_range(1, 0, 1, 8, f"(기준일 : {base_date})", f_center)
+        ws.merge_range(2, 0, 2, 8, f"조사자 : {examiner}  (인)", f_right)
+        ws.merge_range(3, 0, 3, 8, f"입회자 : {witness}  (인)", f_right)
+        heads = ["순번", "상품명", "규격", "전 재고조사일\n기준 재고량\n(A)", "전 재고조사일\n이후 매입량\n(B)",
+                 f"{day_label}\n원가배부 전\n장부상 재고량\n(C = A + B)", f"{day_label}\n실 재고량\n(D)",
+                 "급여량\n(원가배부량)\n(E = C - D)", "비고"]
+        ws.set_row(4, 66)
+        for c, h in enumerate(heads):
+            ws.write(4, c, h, f_head)
+        for i, r in enumerate(rows.itertuples(index=False), start=1):
+            row = 4 + i
+            ws.write(row, 0, i, f_ctr)
+            ws.write(row, 1, r.상품명, f_txt)
+            ws.write(row, 2, r.규격, f_ctr)
+            for c, v in zip(range(3, 8), (r.A, r.B, r.C, r.D, r.C - r.D)):
+                ws.write_number(row, c, round(float(v), 2), f_num)
+            ws.write(row, 8, "", f_txt)
+        ws.fit_to_pages(1, 0)
+        ws.set_paper(9)  # A4
+    return buf.getvalue()
+
+
 def list_accounting_months(db_file):
     """매입·사용량·고정비·정산·입식·종결 중 하나라도 있는 연월 (최신순)."""
     conn = db_connect(db_file)
@@ -3846,7 +4012,8 @@ with tab1:
 
 with tab0:
     # 한 화면에 등록·내역·재고·품목이 몰려 있어 길고 복잡했으므로, 개체 관리 탭처럼 하위 탭으로 나눈다.
-    sub_pur_entry, sub_pur_hist, sub_stock, sub_items = st.tabs(["🚚 매입 등록", "📋 매입 내역", "📦 재고 현황", "🏷️ 품목 관리"])
+    sub_pur_entry, sub_pur_hist, sub_stock, sub_stock_count, sub_items = st.tabs(
+        ["🚚 매입 등록", "📋 매입 내역", "📦 재고 현황", "🧾 재고조사표", "🏷️ 품목 관리"])
 
     with sub_items:
         col_item_form, col_item_list = st.columns([1, 2])
@@ -3867,7 +4034,7 @@ with tab0:
                 st.text_input("품목코드 (자동부여)", value=next_item_code, disabled=True)
                 new_item_name = st.text_input("품목명", placeholder="예: TMR사료")
                 new_item_category = st.selectbox("분류", ["사료", "조사료", "약품", "기타저장품"])
-                new_item_unit = st.selectbox("단위", ["kg", "ml", "개"])
+                new_item_unit = st.selectbox("단위", ["kg", "ml", "개", "병", "통", "포"])
                 submitted_item = st.form_submit_button("품목 등록", type="primary", width="stretch")
                 if submitted_item:
                     new_item_name = new_item_name.strip()
@@ -3922,7 +4089,7 @@ with tab0:
                     "삭제": st.column_config.CheckboxColumn("삭제", width=50),
                     "품목코드": st.column_config.TextColumn("코드", width="small"),
                     "분류": st.column_config.SelectboxColumn("분류", options=["사료", "조사료", "약품", "기타저장품"], width="small"),
-                    "단위": st.column_config.SelectboxColumn("단위", options=["kg", "ml", "개"], width="small"),
+                    "단위": st.column_config.SelectboxColumn("단위", options=["kg", "ml", "개", "병", "통", "포"], width="small"),
                     "현재재고": st.column_config.NumberColumn(format="localized", alignment="right", width="small"),
                     "이동평균단가": st.column_config.NumberColumn("평균단가 (원)", format="localized", alignment="right", width="small"),
                 },
@@ -4304,6 +4471,71 @@ with tab0:
                 },
             )
             show_table_total(len(view_df), "남은 금액", float(view_df["남은금액"].sum()))
+
+    with sub_stock_count:
+        st.subheader("🧾 재고조사표")
+        st.caption("회사 재고조사표 양식(A 전월 재고 · B 매입 · C 장부상 재고 · D 실 재고 · E 급여량)으로 인쇄하거나 엑셀로 내려받습니다. "
+                   "D(실 재고량)는 '월말 비용 등록'에 넣은 사용량으로 계산한 값이 미리 채워져 있으니, 실제로 센 수량과 다르면 표에서 고치세요.")
+        now_m = datetime.now()
+        prev_m = f"{now_m.year - 1}-12" if now_m.month == 1 else f"{now_m.year}-{now_m.month - 1:02d}"
+        sc_months = pd.read_sql("""
+            SELECT DISTINCT substr(purchase_date, 1, 7) AS m FROM purchase
+            UNION SELECT DISTINCT settlement_month AS m FROM monthly_usage
+        """, conn)["m"].dropna().astype(str).tolist()
+        sc_months = sorted(set(sc_months) | {now_m.strftime("%Y-%m"), prev_m}, reverse=True)
+        default_farm_label = selected_farm if "시험" in selected_farm else selected_farm.replace("농장", "시험농장")
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        with sc1:
+            sc_month = st.selectbox("📅 조사 월", sc_months, index=sc_months.index(prev_m), key="stock_count_month")
+        with sc2:
+            sc_farm_label = st.text_input("농장 표기", value=default_farm_label, key="stock_count_farm_label")
+        with sc3:
+            sc_examiner = st.text_input("조사자", value="대리 배성태", key="stock_count_examiner")
+        with sc4:
+            sc_witness = st.text_input("입회자", value="팀장 신민석", key="stock_count_witness")
+
+        sc_rows = stock_count_rows(DB_FILE, sc_month)
+        sc_view = sc_rows.drop(columns=["코드"]).copy()
+        sc_edited = farm_data_editor(
+            sc_view,
+            width="stretch",
+            hide_index=True,
+            num_rows="fixed",
+            disabled=["상품명", "규격", "A", "B", "C", "등록사용량"],
+            key=f"stock_count_editor_{sc_month}",
+            column_config={
+                "상품명": st.column_config.TextColumn("상품명", width="medium"),
+                "규격": st.column_config.TextColumn("규격", width="small"),
+                "A": st.column_config.NumberColumn("전월 재고 (A)", format="localized", alignment="right"),
+                "B": st.column_config.NumberColumn("매입량 (B)", format="localized", alignment="right"),
+                "C": st.column_config.NumberColumn("장부상 재고 (C=A+B)", format="localized", alignment="right"),
+                "등록사용량": st.column_config.NumberColumn("등록된 사용량", format="localized", alignment="right",
+                                                       help="월말 비용 등록(시험군별 사용량)에 넣은 이 달 사용량. 한우위탁우는 이 달 출하·폐사 두수"),
+                "D": st.column_config.NumberColumn("실 재고량 (D) ✏️", min_value=0, format="localized", alignment="right",
+                                                  help="실제로 센 수량을 입력하세요."),
+            },
+        )
+        sc_final = sc_rows.copy()
+        sc_final["D"] = pd.to_numeric(sc_edited["D"], errors="coerce").fillna(0).values
+        sc_final["E"] = sc_final["C"] - sc_final["D"]
+        mismatch = sc_final[(sc_final["코드"] != "_cattle") & ((sc_final["E"] - sc_final["등록사용량"]).abs() > 0.005)]
+        if not mismatch.empty:
+            st.warning("급여량(E = C − D)이 '월말 비용 등록'의 사용량과 다른 품목: "
+                       + ", ".join(f"{r.상품명} (급여량 {_stock_qty(r.E)} / 등록 {_stock_qty(r.등록사용량)})" for r in mismatch.itertuples(index=False))
+                       + " — 원가 배분에 반영하려면 '💰 월말 정산' 탭의 사용량 등록을 맞춰 주세요.")
+
+        sc_html = generate_stock_count_sheet(sc_final, sc_month, sc_farm_label, sc_examiner, sc_witness)
+        dl1, dl2 = st.columns(2)
+        dl1.download_button("🖨️ 인쇄용 파일 내려받기 (HTML)", sc_html.encode("utf-8"),
+                            file_name=f"재고조사표_{selected_farm}_{sc_month}.html", mime="text/html",
+                            width="stretch", key="stock_count_html_dl")
+        dl2.download_button("📗 엑셀로 내려받기", stock_count_excel(sc_final, sc_month, sc_farm_label, sc_examiner, sc_witness),
+                            file_name=f"재고조사표_{selected_farm}_{sc_month}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            width="stretch", key="stock_count_xlsx_dl")
+        st.caption("HTML 파일을 열어 '🖨️ 인쇄 / PDF 저장' 버튼을 누르면 A4로 인쇄됩니다.")
+        st.markdown("###### 미리보기")
+        st.iframe(sc_html, height=700)
 
 with tab2:
     st.subheader("💰 월말 비용 등록 및 조회")
