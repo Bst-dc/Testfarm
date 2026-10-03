@@ -3011,7 +3011,7 @@ kpi_cols[5].metric("평균 개월령", avg_months_str,
                    delta="사육중 개체 기준", delta_color="off", delta_arrow="off")
 st.write("")
 
-tab_cattle, tab1, tab0, tab2, tab_report, tab_slaughter = st.tabs(["🐂 개체 관리", "📊 사육 및 재고 현황", "📦 품목·매입 관리", "💰 월말 정산 및 청구 내역", "🧾 결산 리포트", "🥩 도축 성적"])
+tab_cattle, tab1, tab0, tab2, tab_settle, tab_report, tab_slaughter = st.tabs(["🐂 개체 관리", "📊 사육 및 재고 현황", "📦 품목·매입 관리", "💰 월말 등록", "🚀 월말 정산", "🧾 결산 리포트", "🥩 도축 성적"])
 
 # ===== 개체 관리 탭 =====
 with tab_cattle:
@@ -4666,13 +4666,13 @@ with tab0:
         sc_final = sc_rows.copy()
         sc_final["D"] = pd.to_numeric(sc_edited["D"], errors="coerce").fillna(0).values
         sc_final["E"] = sc_final["C"] - sc_final["D"]
-        # 월말 정산 탭의 원가배부 내역이 같은 달의 실 재고량(J)으로 쓴다.
+        # 월말 등록 탭의 원가배부 내역이 같은 달의 실 재고량(J)으로 쓴다.
         st.session_state[f"_stock_actual_{sc_month}"] = dict(zip(sc_final["코드"], sc_final["D"]))
         mismatch = sc_final[(sc_final["코드"] != "_cattle") & ((sc_final["E"] - sc_final["등록사용량"]).abs() > 0.005)]
         if not mismatch.empty:
             st.warning("급여량(E = C − D)이 '월말 비용 등록'의 사용량과 다른 품목: "
                        + ", ".join(f"{r.상품명} (급여량 {_stock_qty(r.E)} / 등록 {_stock_qty(r.등록사용량)})" for r in mismatch.itertuples(index=False))
-                       + " — 원가 배분에 반영하려면 '💰 월말 정산' 탭의 사용량 등록을 맞춰 주세요.")
+                       + " — 원가 배분에 반영하려면 '💰 월말 등록' 탭의 사용량 등록을 맞춰 주세요.")
 
         sc_html = generate_stock_count_sheet(sc_final, sc_month, sc_farm_label, sc_examiner, sc_witness)
         dl1, dl2 = st.columns(2)
@@ -5134,13 +5134,14 @@ with tab2:
         with st.expander("인쇄 미리보기"):
             st.iframe(ca_html, height=650)
 
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    st.markdown("### 🚀 월말 정산(일할계산) 실행")
-    st.markdown("아래 버튼을 누르면 위에서 등록한 변동비·고정비를 분석하여, 이번 달 사육 이력이 있는 각 개체에 **실제 사육일수에 비례해(일할계산)** 변동비와 고정비를 배분합니다.")
+# 월말 정산 실행은 비용 등록(💰 월말 등록)과 따로 탭으로 뺀다.
+with tab_settle:
+    st.subheader("🚀 월말 정산(일할계산) 실행")
+    st.markdown("아래 버튼을 누르면 '💰 월말 등록' 탭에서 등록한 변동비·고정비를 분석하여, 이번 달 사육 이력이 있는 각 개체에 **실제 사육일수에 비례해(일할계산)** 변동비와 고정비를 배분합니다.")
     
     # 정산 대상 연월은 비용(사용량·고정비)이 등록됐거나 이미 정산된 연월 중에서 고른다.
     # 직접 입력하게 두면 비용이 없는 달(예: 이번 달)이 그대로 정산되는 실수가 생긴다.
-    # 위 공통 정산연월을 바꾸면 여기 값도 따라 바뀐다(settlement_month_input). 처음에는 그 정산연월로 시작.
+    # '💰 월말 등록' 탭의 공통 정산연월을 바꾸면 여기 값도 따라 바뀐다(settlement_month_input). 처음에는 그 정산연월로 시작.
     calc_months = sorted({r[0] for r in conn.execute("""
         SELECT settlement_month FROM monthly_usage
         UNION SELECT settlement_month FROM monthly_fixedcost
@@ -5148,14 +5149,14 @@ with tab2:
     """).fetchall() if r[0] and re.fullmatch(r"\d{4}-\d{2}", str(r[0]))}, reverse=True)
     if not calc_months:
         # 아래 탭들이 계속 그려져야 하므로 st.stop() 대신 이번 달 하나만 선택지로 둔다.
-        st.info("비용(사용량·고정비)이 등록된 연월이 없습니다. 위에서 비용을 먼저 등록하세요.")
+        st.info("비용(사용량·고정비)이 등록된 연월이 없습니다. '💰 월말 등록' 탭에서 비용을 먼저 등록하세요.")
         calc_months = [datetime.now().strftime('%Y-%m')]
     settled_months_set = {r[0] for r in conn.execute("SELECT DISTINCT settlement_month FROM cattle_cost_log").fetchall()}
     if "calc_target_month" not in st.session_state:
         start_month = st.session_state.get("cost_month_input")
         st.session_state["calc_target_month"] = start_month if start_month in calc_months else calc_months[0]
     elif st.session_state["calc_target_month"] not in calc_months:
-        # 위에서 비용이 없는 달로 바꾼 경우: 선택지에 없으니 가장 최근 등록 연월로 둔다.
+        # 월말 등록 탭에서 비용이 없는 달로 바꾼 경우: 선택지에 없으니 가장 최근 등록 연월로 둔다.
         st.session_state["calc_target_month"] = calc_months[0]
     target_month = st.columns([1, 3])[0].selectbox(
         "정산 대상 연월", calc_months, key="calc_target_month",
@@ -5212,7 +5213,7 @@ with tab2:
         if summary['두수'].iloc[-1] == 0:
             st.warning("이 달에 사육일수가 있는 개체가 없어 정산할 수 없습니다.")
     else:
-        st.info(f"[{target_month}] 에 등록된 사용량·고정비가 없습니다. 정산 전에 위에서 비용을 먼저 등록하세요.")
+        st.info(f"[{target_month}] 에 등록된 사용량·고정비가 없습니다. 정산 전에 '💰 월말 등록' 탭에서 비용을 먼저 등록하세요.")
     
     st.caption("※ 입식 당일은 절식하므로 배분에서 제외하고, 입식 다음 날부터 사육일수로 계산합니다.")
     settled_count = conn.execute(
@@ -5379,7 +5380,7 @@ with tab_report:
 
     settled_months = list_settled_months(DB_FILE)
     if not settled_months:
-        st.info("아직 정산된 연월이 없습니다. 먼저 '🚀 월말 정산(일할계산) 실행' 탭에서 정산을 실행하세요.")
+        st.info("아직 정산된 연월이 없습니다. 먼저 '🚀 월말 정산' 탭에서 정산을 실행하세요.")
     else:
         report_col, _ = st.columns([1, 3])
         report_month = report_col.selectbox("리포트 연월", settled_months, key="report_month_select")
