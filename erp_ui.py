@@ -2133,6 +2133,153 @@ def stock_count_excel(rows, month, farm_label, examiner, witness):
     return buf.getvalue()
 
 
+# ========== 원가배부 내역 (시험군별 사용량 · 재고 대사, 인쇄용) ==========
+# 회사에서 쓰던 엑셀 양식(원가배부 내역)과 같은 칸 구성:
+#   시험군별 사용량 [A][B].. / F 전 재고조사일 이후 사용량(시험군 합계) / G 전 재고조사일 기준 재고량 /
+#   H 이후 매입량 / I = G + H 장부상 재고량 / J 실 재고량 / K = I - J 원가배부량 / L = K - F 차액분
+def cost_allocation_rows(db_file, month):
+    """반환: (시험군 목록 [(코드, 이름)], DataFrame[코드, 품목, 규격, g0.., F, G, H, I])
+    시험군 사용량 = 월말 비용 등록(monthly_usage) 그 달 값."""
+    start, end, _ = _month_bounds(month)
+    conn = db_connect(db_file)
+    try:
+        usage = pd.read_sql(
+            "SELECT item_code, test_group_code, SUM(total_usage) AS q FROM monthly_usage "
+            "WHERE settlement_month = ? GROUP BY item_code, test_group_code", conn, params=(month,))
+        groups = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master ORDER BY test_group_code", conn)
+        items = pd.read_sql("""
+            SELECT i.item_code, i.item_name, i.unit,
+              COALESCE((SELECT SUM(quantity) FROM purchase p WHERE p.item_code = i.item_code AND p.purchase_date < ?), 0)
+            - COALESCE((SELECT SUM(total_usage) FROM monthly_usage u WHERE u.item_code = i.item_code AND u.settlement_month < ?), 0) AS g,
+              COALESCE((SELECT SUM(quantity) FROM purchase p WHERE p.item_code = i.item_code AND p.purchase_date >= ? AND p.purchase_date <= ?), 0) AS h
+            FROM item_master i
+        """, conn, params=(start, month, start, end))
+    finally:
+        conn.close()
+
+    # 그 달 사용량이 있는 시험군만 칸으로 둔다 (없으면 등록된 시험군 전체).
+    used_codes = set(usage["test_group_code"].dropna())
+    grp = [(r.test_group_code, r.test_name) for r in groups.itertuples(index=False)
+           if not used_codes or r.test_group_code in used_codes]
+    usage["q"] = pd.to_numeric(usage["q"], errors="coerce").fillna(0).astype(float)
+    by = {(r.item_code, r.test_group_code): r.q for r in usage.itertuples(index=False)}
+
+    rows = []
+    for c in ("g", "h"):
+        items[c] = pd.to_numeric(items[c], errors="coerce").fillna(0).astype(float)
+    items["_n"] = items["item_code"].map(lambda c: int("".join(filter(str.isdigit, str(c))) or 0))
+    for r in items.sort_values(["_n", "item_code"]).itertuples(index=False):
+        per = [by.get((r.item_code, code), 0.0) for code, _ in grp]
+        f = float(sum(by.get((r.item_code, code), 0.0) for code in used_codes)) if used_codes else 0.0
+        if max(abs(r.g), abs(r.h), abs(f)) < 0.005:
+            continue
+        row = {"코드": r.item_code, "품목": r.item_name, "규격": r.unit or ""}
+        row.update({f"g{i}": v for i, v in enumerate(per)})
+        row.update({"F": f, "G": r.g, "H": r.h, "I": r.g + r.h})
+        rows.append(row)
+    cols = ["코드", "품목", "규격", *[f"g{i}" for i in range(len(grp))], "F", "G", "H", "I"]
+    return grp, pd.DataFrame(rows, columns=cols)
+
+
+def _cost_alloc_headers(groups, month):
+    """시험군 칸 글자(A, B, ..)와 나머지 칸 글자. 시험군이 5개 이하면 회사 양식처럼 F~L."""
+    import string
+    letters = string.ascii_uppercase
+    g_letters = [letters[i] for i in range(len(groups))]
+    base = max(len(groups), 5)
+    F, G, H, I, J, K, L = (letters[base + i] for i in range(7))
+    f_formula = "+".join(g_letters) if len(g_letters) <= 3 else f"{g_letters[0]}~{g_letters[-1]}"
+    _, end, _ = _month_bounds(month)
+    y, m, d = end.split("-")
+    day = f"{m}월 {d}일"
+    heads = [f"{name}<br>[{l}]" for (_, name), l in zip(groups, g_letters)] + [
+        f"전 재고조사일<br>이후 사용량<br>({F}={f_formula or '0'})",
+        f"전 재고조사일<br>기준 재고량<br>({G})",
+        f"전 재고조사일<br>이후 매입량<br>({H})",
+        f"{day} 기준<br>원가배부전<br>장부상 재고량<br>({I}={G}+{H})",
+        f"{day}<br>기준<br>실 재고량<br>({J})",
+        f"원가배부량<br>{K}=({I}-{J})",
+        f"차액분<br>{L}=({K}-{F})",
+    ]
+    return heads, f"{y}.{m}.{d}", f"{y}년 {m}월"
+
+
+def _cost_alloc_values(rows, n_groups, actual):
+    """줄마다 [시험군들.., F, G, H, I, J, K, L]. actual: {품목코드: 실 재고량} (없으면 I - F)."""
+    out = []
+    for r in rows.to_dict("records"):
+        j = actual.get(r["코드"]) if actual else None
+        j = r["I"] - r["F"] if j is None or pd.isna(j) else float(j)
+        k = r["I"] - j
+        out.append([r[f"g{i}"] for i in range(n_groups)] + [r["F"], r["G"], r["H"], r["I"], j, k, k - r["F"]])
+    return out
+
+
+def generate_cost_allocation_sheet(groups, rows, month, farm_label, actual, diff_note, writers):
+    esc = lambda v: html.escape("" if v is None else str(v))
+    heads, base_date, ym = _cost_alloc_headers(groups, month)
+    title = f"{ym} {farm_label} 원가배부 내역"
+    values = _cost_alloc_values(rows, len(groups), actual)
+    body = []
+    for r, vals in zip(rows.to_dict("records"), values):
+        body.append(f'<tr><td>{esc(r["품목"])}</td><td class="c">{esc(r["규격"])}</td>'
+                    + "".join(f'<td class="n">{_stock_qty(v)}</td>' for v in vals) + "</tr>")
+    writer_text = ", ".join(f"{esc(w.strip())}(인)" for w in str(writers).split(",") if w.strip())
+    css = STOCK_COUNT_CSS.replace("size: A4 portrait", "size: A4 landscape").replace("max-width: 900px", "max-width: 1100px")
+    return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(title)}</title>
+<style>{css}
+.foot {{ border: 1px solid #111; border-top: 0; padding: 7px 8px; }}
+th {{ font-size: 12px; }}
+</style></head><body>
+<div class="toolbar"><button onclick="window.print()">🖨️ 인쇄 / PDF 저장</button></div>
+<div class="sheet">
+<h1>{esc(title)}</h1>
+<p class="date">(재고조사일 : {base_date})</p>
+<table><thead><tr><th style="width:14%">구 분</th><th style="width:5%">규격</th>{''.join(f'<th>{h}</th>' for h in heads)}</tr></thead>
+<tbody>{''.join(body)}</tbody></table>
+<div class="foot">▣ 차액분 : {esc(diff_note)}</div>
+<div class="foot">▣ 작성자 : {writer_text}</div>
+</div></body></html>"""
+
+
+def cost_allocation_excel(groups, rows, month, farm_label, actual, diff_note, writers):
+    heads, base_date, ym = _cost_alloc_headers(groups, month)
+    heads = [h.replace("<br>", "\n") for h in heads]
+    title = f"{ym} {farm_label} 원가배부 내역"
+    values = _cost_alloc_values(rows, len(groups), actual)
+    ncol = 2 + len(heads)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as xw:
+        wb = xw.book
+        ws = wb.add_worksheet("원가배부내역")
+        f_title = wb.add_format({"bold": True, "font_size": 18, "align": "center", "valign": "vcenter"})
+        f_center = wb.add_format({"align": "center"})
+        f_head = wb.add_format({"bold": True, "align": "center", "valign": "vcenter", "text_wrap": True,
+                                "border": 1, "bg_color": "#F2F2F2"})
+        f_txt = wb.add_format({"border": 1})
+        f_ctr = wb.add_format({"border": 1, "align": "center"})
+        f_num = wb.add_format({"border": 1, "num_format": '#,##0.##;-#,##0.##;"-"'})
+        ws.set_column(0, 0, 16); ws.set_column(1, 1, 6); ws.set_column(2, ncol - 1, 13)
+        ws.merge_range(0, 0, 0, ncol - 1, title, f_title)
+        ws.set_row(0, 30)
+        ws.merge_range(1, 0, 1, ncol - 1, f"(재고조사일 : {base_date})", f_center)
+        ws.set_row(2, 80)
+        for c, h in enumerate(["구 분", "규격", *heads]):
+            ws.write(2, c, h, f_head)
+        for i, (r, vals) in enumerate(zip(rows.to_dict("records"), values), start=3):
+            ws.write(i, 0, r["품목"], f_txt)
+            ws.write(i, 1, r["규격"], f_ctr)
+            for c, v in enumerate(vals, start=2):
+                ws.write_number(i, c, round(float(v), 2), f_num)
+        last = 3 + len(values)
+        writer_text = ", ".join(f"{w.strip()}(인)" for w in str(writers).split(",") if w.strip())
+        ws.merge_range(last, 0, last, ncol - 1, f"▣ 차액분 : {diff_note}", f_txt)
+        ws.merge_range(last + 1, 0, last + 1, ncol - 1, f"▣ 작성자 : {writer_text}", f_txt)
+        ws.set_landscape(); ws.set_paper(9); ws.fit_to_pages(1, 0)
+    return buf.getvalue()
+
+
 def list_accounting_months(db_file):
     """매입·사용량·고정비·정산·입식·종결 중 하나라도 있는 연월 (최신순)."""
     conn = db_connect(db_file)
@@ -4518,6 +4665,8 @@ with tab0:
         sc_final = sc_rows.copy()
         sc_final["D"] = pd.to_numeric(sc_edited["D"], errors="coerce").fillna(0).values
         sc_final["E"] = sc_final["C"] - sc_final["D"]
+        # 월말 정산 탭의 원가배부 내역이 같은 달의 실 재고량(J)으로 쓴다.
+        st.session_state[f"_stock_actual_{sc_month}"] = dict(zip(sc_final["코드"], sc_final["D"]))
         mismatch = sc_final[(sc_final["코드"] != "_cattle") & ((sc_final["E"] - sc_final["등록사용량"]).abs() > 0.005)]
         if not mismatch.empty:
             st.warning("급여량(E = C − D)이 '월말 비용 등록'의 사용량과 다른 품목: "
@@ -4939,6 +5088,50 @@ with tab2:
 
         save_with_delete_confirm("고정비", fc_changed, fc_deleted, edited_fc_df.iloc[0:0],
                                  ["ID", "정산연월", "지출항목", "총청구금액"], "총청구금액", _save_fixedcost)
+
+
+    st.markdown("---")
+    st.markdown("##### 🖨️ 원가배부 내역 출력")
+    st.caption("위 정산연월의 시험군별 사용량과 재고(전월 재고 · 매입 · 장부상 재고 · 실 재고)를 회사 양식으로 인쇄하거나 엑셀로 내려받습니다. "
+               "실 재고량(J)은 '📦 품목·매입 관리 → 🧾 재고조사표'에서 같은 달로 입력한 값을 쓰고, 없으면 장부상 재고 − 사용량으로 채웁니다.")
+    ca_groups, ca_rows = cost_allocation_rows(DB_FILE, cost_month)
+    if ca_rows.empty:
+        st.info(f"{cost_month}에 사용량·매입·재고가 있는 품목이 없습니다.")
+    else:
+        _fm = re.fullmatch(r"(구미)(.+)농장", selected_farm)
+        default_ca_label = f"{_fm.group(1)}({_fm.group(2)})시험농장" if _fm else selected_farm.replace("농장", "시험농장")
+        ca1, ca2, ca3 = st.columns([1, 1, 2])
+        with ca1:
+            ca_farm_label = st.text_input("농장 표기", value=default_ca_label, key="cost_alloc_farm_label")
+        with ca2:
+            ca_writers = st.text_input("작성자 (쉼표로 구분)", value="신민석, 배성태, 이상욱", key="cost_alloc_writers")
+        with ca3:
+            ca_diff_note = st.text_input("차액분 메모", placeholder="차액이 있으면 사유를 적으세요", key="cost_alloc_diff_note")
+        ca_actual = st.session_state.get(f"_stock_actual_{cost_month}")
+        ca_heads, _, _ = _cost_alloc_headers(ca_groups, cost_month)
+        ca_vals = _cost_alloc_values(ca_rows, len(ca_groups), ca_actual)
+        ca_view = pd.DataFrame(ca_vals, columns=[h.replace("<br>", " ") for h in ca_heads])
+        ca_view.insert(0, "규격", ca_rows["규격"].values)
+        ca_view.insert(0, "구분", ca_rows["품목"].values)
+        farm_dataframe(ca_view, width="stretch", hide_index=True,
+                       column_config={c: st.column_config.NumberColumn(c, format="localized", alignment="right")
+                                      for c in ca_view.columns[2:]})
+        ca_diff = [(r["품목"], v[-1]) for r, v in zip(ca_rows.to_dict("records"), ca_vals) if abs(v[-1]) > 0.005]
+        if ca_diff:
+            st.warning("차액분이 있는 품목: " + ", ".join(f"{n} ({_stock_qty(d)})" for n, d in ca_diff)
+                       + " — 실 재고로 계산한 원가배부량과 등록한 사용량이 다릅니다.")
+        ca_html = generate_cost_allocation_sheet(ca_groups, ca_rows, cost_month, ca_farm_label, ca_actual, ca_diff_note, ca_writers)
+        cd1, cd2 = st.columns(2)
+        cd1.download_button("🖨️ 인쇄용 파일 내려받기 (HTML)", ca_html.encode("utf-8"),
+                            file_name=f"원가배부내역_{selected_farm}_{cost_month}.html", mime="text/html",
+                            width="stretch", key="cost_alloc_html_dl")
+        cd2.download_button("📗 엑셀로 내려받기",
+                            cost_allocation_excel(ca_groups, ca_rows, cost_month, ca_farm_label, ca_actual, ca_diff_note, ca_writers),
+                            file_name=f"원가배부내역_{selected_farm}_{cost_month}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            width="stretch", key="cost_alloc_xlsx_dl")
+        with st.expander("인쇄 미리보기"):
+            st.iframe(ca_html, height=650)
 
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.markdown("### 🚀 월말 정산(일할계산) 실행")
