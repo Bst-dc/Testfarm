@@ -2724,14 +2724,24 @@ if selected_farm == "시험농장 전체 현황":
     st.subheader("🌐 농장 통합 대시보드")
     
     all_cattle_dfs = []
-    
+
     for farm_nm, farm_cfg_info in FARM_CONFIG.items():
         f_db = farm_cfg_info["db_file"]
         if db_exists(f_db):
             try:
                 f_conn = sqlite3.connect(f_db)
-                df_f = pd.read_sql("SELECT cattle_id as 개체번호, status as 상태, admission_date as 입식일, castration_date as 거세일, closure_date as 종결일, initial_cost as 초기원가, market_name as 우시장 FROM cattle", f_conn)
+                df_f = pd.read_sql("""
+                    SELECT c.cattle_id as 개체번호, c.status as 상태, c.admission_date as 입식일, c.castration_date as 거세일,
+                           c.closure_date as 종결일, c.initial_cost as 초기원가, c.market_name as 우시장,
+                           COALESCE(l.cost, 0) as 누적사육비
+                    FROM cattle c
+                    LEFT JOIN (SELECT cattle_id, SUM(allocated_variable_cost + allocated_fixed_cost) AS cost
+                               FROM cattle_cost_log GROUP BY cattle_id) l ON l.cattle_id = c.cattle_id
+                """, f_conn)
                 df_f['농장명'] = farm_nm
+                # 현재원가 = 구입비용합계 + 지금까지 정산으로 배분된 사육비 (개체관리대장의 '현재원가'와 같은 계산)
+                df_f['현재원가'] = (pd.to_numeric(df_f['초기원가'], errors='coerce').fillna(0)
+                                  + pd.to_numeric(df_f['누적사육비'], errors='coerce').fillna(0))
                 all_cattle_dfs.append(df_f)
                 f_conn.close()
             except Exception as e:
@@ -2776,6 +2786,11 @@ if selected_farm == "시험농장 전체 현황":
             총구입비용_만원=('초기원가', lambda x: int(x.sum(skipna=True)) // 10000),
             평균구입금액_만원=('초기원가', lambda x: int(x.mean(skipna=True)) // 10000 if not x.isna().all() else 0)
         ).reset_index()
+        # 현재 개체 원가: 지금 사육중인 개체의 현재원가(구입비 + 정산된 사육비) 합계와 두당 평균
+        raising = df_all[df_all['상태'] == '사육']
+        cur_cost = raising.groupby('농장명')['현재원가'].agg(['sum', 'mean'])
+        farm_summary['현재원가합계_만원'] = farm_summary['농장명'].map(cur_cost['sum']).fillna(0).astype(float) // 10000
+        farm_summary['두당현재원가_만원'] = farm_summary['농장명'].map(cur_cost['mean']).fillna(0).astype(float) // 10000
         # 폐사율 = 누적 폐사 / 전체 입식
         farm_summary.insert(
             farm_summary.columns.get_loc('폐사') + 1, '폐사율',
@@ -2793,6 +2808,12 @@ if selected_farm == "시험농장 전체 현황":
                 "폐사율": st.column_config.NumberColumn("폐사율 (%)", format="%.1f%%", alignment="right"),
                 "총구입비용_만원": money_col("총 구입비용 (만원)"),
                 "평균구입금액_만원": money_col("두당 평균 (만원)"),
+                "현재원가합계_만원": st.column_config.NumberColumn(
+                    "현재 개체 원가 합계 (만원)", format="localized", alignment="right", step=1,
+                    help="사육중인 개체의 현재원가(구입비용 + 월말 정산으로 배분된 사육비) 합계"),
+                "두당현재원가_만원": st.column_config.NumberColumn(
+                    "두당 현재 원가 (만원)", format="localized", alignment="right", step=1,
+                    help="사육중인 개체의 현재원가 평균"),
             },
         )
         st.write("")
@@ -3047,16 +3068,6 @@ current_raising = status_counts.get('사육', 0)
 dead_count = status_counts.get('폐사', 0)
 shipped_count = status_counts.get('출하', 0)
 
-this_month = datetime.now().strftime('%Y-%m')
-month_admit_cnt, month_calf_cost = conn.execute(
-    "SELECT COUNT(*), COALESCE(SUM(initial_cost), 0) FROM cattle WHERE substr(admission_date, 1, 7) = ?",
-    (this_month,),
-).fetchone()
-month_purchase_amt = conn.execute(
-    "SELECT COALESCE(SUM(total_amount), 0) FROM purchase WHERE substr(purchase_date, 1, 7) = ?",
-    (this_month,),
-).fetchone()[0]
-
 # 평균 개월령 계산 (사육 중인 개체 대상)
 active_cattle_dates = pd.read_sql("SELECT birth_date FROM cattle WHERE status='사육' AND birth_date IS NOT NULL AND birth_date != ''", conn)
 avg_months_str = "-"
@@ -3093,7 +3104,7 @@ if not active_cattle_dates.empty:
 def _rate(part):
     return f"{part / total_admitted * 100:.1f}%" if total_admitted else "0.0%"
 
-kpi_cols = st.container(key="kpi_main").columns(6)
+kpi_cols = st.container(key="kpi_main").columns(4)
 kpi_cols[0].metric("현재 사육 두수", f"{current_raising:,}두",
                    delta=f"전체 입식 {total_admitted:,}두", delta_color="off", delta_arrow="off")
 kpi_cols[1].metric("누적 출하", f"{shipped_count:,}두",
@@ -3101,11 +3112,7 @@ kpi_cols[1].metric("누적 출하", f"{shipped_count:,}두",
 kpi_cols[2].metric("누적 폐사", f"{dead_count:,}두",
                    delta=f"폐사율 {_rate(dead_count)}", delta_color="inverse" if dead_count else "off",
                    delta_arrow="off")
-kpi_cols[3].metric(f"{datetime.now().month}월 송아지 구입비", f"{int(month_calf_cost) // 10000:,}만원",
-                   delta=f"이달 {month_admit_cnt:,}두 입식", delta_color="off", delta_arrow="off")
-kpi_cols[4].metric(f"{datetime.now().month}월 품목 매입액", f"{int(month_purchase_amt) // 10000:,}만원",
-                   delta="사료·약품 등 입고", delta_color="off", delta_arrow="off")
-kpi_cols[5].metric("평균 개월령", avg_months_str,
+kpi_cols[3].metric("평균 개월령", avg_months_str,
                    delta="사육중 개체 기준", delta_color="off", delta_arrow="off")
 st.write("")
 
