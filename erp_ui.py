@@ -2392,7 +2392,8 @@ def cost_allocation_excel(groups, rows, month, farm_label, actual, diff_note, wr
 #   일급여량    = 그날 적용되는 두당 일급여량 (구역별 '사료 변경일' 표에서 그날 이전의 가장 최근 변경값)
 #   일총급여량  = 두수 × 일급여량
 #   사료량      = 전날 사료량 − 전날 일총급여량 + 그날 사료 매입(매입 등록에서 이 구역으로 넣은 '사료' 분류 품목)
-#   사료빈 재고 확인값이 있는 날은 그 값으로 다시 맞춘다 (실측이 계산보다 우선).
+#   출발점은 전월 말 사료량 (구역이 하나면 '사료' 장부 재고 자동, 여러 개면 월말에 구역별로 입력).
+#   중간에 사료빈을 직접 확인한 값이 있는 날은 그 값으로 다시 맞춘다 (실측이 계산보다 우선).
 # 사료 품목이 바뀌어도 구역 단위로 '사료' 분류 매입을 모두 더하므로 그대로 이어진다.
 def _bld_key(v):
     """'1동' / '1' / ' 1 동' → '1' (동 이름 비교용)"""
@@ -2421,22 +2422,56 @@ def _parse_day(v):
         return None
 
 
-def feed_stock_projection(conn, zone, buildings, start, days, test_groups=()):
+def month_end_before(day):
+    """그날이 속한 달의 바로 전 달 말일 (계산 기준일). 예: 10-04 → 09-30"""
+    from datetime import timedelta
+    return day.replace(day=1) - timedelta(days=1)
+
+
+def book_feed_stock(conn, day):
+    """그날(월말) '사료' 분류 장부 재고 = 그날까지 매입 누계 − 그 달까지 월말 등록 사용량 누계 (농장 전체).
+    반환: (재고량, 그 달 사용량이 등록되어 있는지)"""
+    month = day.strftime("%Y-%m")
+    bought = conn.execute(
+        "SELECT COALESCE(SUM(p.quantity), 0) FROM purchase p JOIN item_master i ON i.item_code = p.item_code "
+        "WHERE i.category = '사료' AND p.purchase_date <= ?", (day.isoformat(),)).fetchone()[0]
+    used, used_month = conn.execute(
+        "SELECT COALESCE(SUM(u.total_usage), 0), "
+        "       COALESCE(SUM(CASE WHEN u.settlement_month = ? THEN 1 ELSE 0 END), 0) "
+        "FROM monthly_usage u JOIN item_master i ON i.item_code = u.item_code "
+        "WHERE i.category = '사료' AND u.settlement_month <= ?", (month, month)).fetchone()
+    return float(bought or 0) - float(used or 0), bool(used_month)
+
+
+def feed_stock_projection(conn, zone, buildings, start, days, test_groups=(), single_zone=False):
     """구역 하나의 날짜별 사료 재고 계산.
-    반환: (DataFrame[날짜, 두수, 일급여량, 일총급여량, 사료량, 사료매입, 재고확인] 또는 None, 안내문 목록)"""
+    출발점은 시작일 바로 전 달 말일(기준일)의 사료량:
+      - 그 날짜로 입력한 구역 사료량이 있으면 그 값 (고아처럼 구역이 여러 개인 농장은 월말에 구역별로 입력)
+      - 없고 구역이 하나뿐이면 그날의 '사료' 장부 재고 (매입 누계 − 월말 등록 사용량 누계)
+    기준일 값은 그날 급여까지 끝난 월말 재고로 보고, 다음 날부터 매일
+      사료량 = 전날 사료량 − 전날 일총급여량(두수 × 사료 변경일 기준 두당 일급여량) + 그날 사료 매입
+    으로 이어 계산한다. 기준일 뒤에 사료빈을 직접 확인한 값이 있으면 그날은 그 값으로 다시 맞춘다.
+    반환: (DataFrame[날짜, 두수, 일급여량, 일총급여량, 사료량, 사료매입, 재고확인] 또는 None, 안내문 목록, 기준 설명)"""
     from datetime import timedelta
     notes = []
     end = start + timedelta(days=days - 1)
-    checks = pd.read_sql("SELECT check_date, quantity FROM feed_stock_check WHERE zone_name = ? ORDER BY check_date",
-                         conn, params=(zone,))
+    base_day = month_end_before(start)
+    checks = pd.read_sql("SELECT check_date, quantity FROM feed_stock_check WHERE zone_name = ? AND check_date >= ? ORDER BY check_date",
+                         conn, params=(zone, base_day.isoformat()))
     check_of = {_parse_day(r.check_date): float(r.quantity) for r in checks.itertuples(index=False) if _parse_day(r.check_date)}
-    base_days = [d for d in check_of if d <= end]
-    if not base_days:
-        return None, ["사료빈 재고 확인값이 없어 계산할 수 없습니다. 아래 설정의 '사료빈 재고 확인'에 확인한 날짜와 사료량을 넣으세요."]
-    before = [d for d in base_days if d <= start]
-    sim_from = max(before) if before else min(base_days)
-    if not before:
-        notes.append(f"{sim_from:%m-%d} 이전에는 재고 확인값이 없어 그날부터 계산합니다.")
+
+    if base_day in check_of:
+        base_qty = check_of.pop(base_day)
+        base_desc = f"{base_day:%Y-%m-%d} 월말 입력값 {base_qty:,.0f}kg"
+    elif single_zone:
+        base_qty, used_registered = book_feed_stock(conn, base_day)
+        base_desc = f"{base_day:%Y-%m-%d} 장부 재고 {base_qty:,.0f}kg"
+        if not used_registered:
+            notes.append(f"{base_day:%Y-%m}월 사료 사용량이 '월말 등록'에 아직 없어 장부 재고에 그 달 사용분이 빠져 있습니다 "
+                         "(사용량을 등록하면 바로 맞춰집니다).")
+    else:
+        return None, [f"{base_day:%Y-%m-%d} 월말 구역별 사료량이 없어 계산할 수 없습니다. "
+                      "아래 설정의 '월말 사료량'에서 구역별로 넣으세요."], ""
 
     # 사료 급여량은 날짜(사료 변경일)에 따라 바뀐다. 그날 이전의 가장 최근 변경값을 쓴다.
     sched = pd.read_sql("SELECT change_date, kg_per_head FROM feed_schedule WHERE zone_name = ? ORDER BY change_date",
@@ -2445,7 +2480,7 @@ def feed_stock_projection(conn, zone, buildings, start, days, test_groups=()):
                    if _parse_day(r.change_date))
     if not steps:
         notes.append("사료 급여량(변경일별 두당 일급여량)이 없어 급여량이 0으로 계산됩니다. 아래 설정에서 넣으세요.")
-    elif steps[0][0] > sim_from:
+    elif steps[0][0] > base_day + timedelta(days=1):
         notes.append(f"첫 사료 변경일({steps[0][0]:%m-%d}) 이전 날짜는 그 급여량({steps[0][1]:g}kg)으로 계산했습니다.")
 
     def kg_on(day):
@@ -2463,22 +2498,24 @@ def feed_stock_projection(conn, zone, buildings, start, days, test_groups=()):
             for r in cattle.itertuples(index=False)
             if (keys and _bld_key(r.building) in keys) or (groups and r.test_group_code in groups)]
 
-    pur = pd.read_sql("""
+    # 구역이 하나뿐이면 구역을 고르지 않은 사료 매입도 그 구역 것으로 본다.
+    zone_cond = "(p.feed_zone = ? OR p.feed_zone IS NULL OR p.feed_zone = '')" if single_zone else "p.feed_zone = ?"
+    pur = pd.read_sql(f"""
         SELECT p.purchase_date AS d, SUM(p.quantity) AS q
         FROM purchase p JOIN item_master i ON i.item_code = p.item_code
-        WHERE i.category = '사료' AND p.feed_zone = ? AND p.purchase_date >= ? AND p.purchase_date <= ?
+        WHERE i.category = '사료' AND {zone_cond} AND p.purchase_date > ? AND p.purchase_date <= ?
         GROUP BY p.purchase_date
-    """, conn, params=(zone, sim_from.isoformat(), end.isoformat()))
+    """, conn, params=(zone, base_day.isoformat(), end.isoformat()))
     pur_of = {_parse_day(r.d): float(r.q) for r in pur.itertuples(index=False)}
 
-    rows, stock, prev_total = [], None, 0.0
-    d = sim_from
+    rows, stock, prev_total = [], base_qty, 0.0  # 기준일 값은 그날 급여까지 끝난 양이라 다음 날 빼지 않는다
+    d = base_day + timedelta(days=1)
     while d <= end:
         heads = sum(1 for adm, clo in herd if (adm is None or adm < d) and (clo is None or clo > d))
         per_head = kg_on(d)
         total = heads * per_head
         bought = pur_of.get(d, 0.0)
-        stock = check_of[d] if d == sim_from else stock - prev_total + bought
+        stock = stock - prev_total + bought
         checked = check_of.get(d)
         if checked is not None:
             stock = checked
@@ -2487,7 +2524,7 @@ def feed_stock_projection(conn, zone, buildings, start, days, test_groups=()):
                          "일총급여량": total, "사료량": stock, "사료매입": bought, "재고확인": checked})
         prev_total = total
         d += timedelta(days=1)
-    return pd.DataFrame(rows), notes
+    return pd.DataFrame(rows), notes, base_desc
 
 
 def feed_stock_excel(blocks, farm_name):
@@ -5044,9 +5081,9 @@ with tab0:
 
     with sub_feed:
         st.subheader("🌾 사료 재고 (사료빈 구역별)")
-        st.caption("구역마다 날짜별 두수 · 두당 일급여량(사료 변경일 기준) · 일총급여량 · 사료량 · 사료 매입을 계산합니다. "
-                   "사료량 = 전날 사료량 − 전날 일총급여량 + 그날 매입(매입 등록에서 이 구역으로 넣은 '사료' 품목). "
-                   "사료빈 재고 확인값을 넣은 날은 그 값으로 다시 맞춥니다.")
+        st.caption("전월 말 사료량에서 시작해, 날마다 두수 × 두당 일급여량(사료 변경일 기준)을 빼고 사료 매입을 더해 구역별 사료량을 계산합니다. "
+                   "전월 말 사료량은 구역이 하나면 '사료' 장부 재고(매입 누계 − 월말 등록 사용량)를 자동으로 쓰고, "
+                   "구역이 여러 개면 아래 설정의 '월말 사료량'에서 구역별로 넣습니다.")
         feed_zones = load_feed_zones(conn)
         feed_zone_groups = load_feed_zone_groups(conn)
         feed_group_df = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master ORDER BY test_group_code", conn)
@@ -5066,7 +5103,10 @@ with tab0:
             feed_blocks = []
             for zone, blds in feed_zones:
                 st.markdown(f"##### 🏠 {zone} ({_zone_desc(zone, blds)})")
-                proj, notes = feed_stock_projection(conn, zone, blds, feed_start, feed_days, feed_zone_groups.get(zone, []))
+                proj, notes, base_desc = feed_stock_projection(conn, zone, blds, feed_start, feed_days,
+                                                               feed_zone_groups.get(zone, []), len(feed_zones) == 1)
+                if base_desc:
+                    st.caption(f"출발점: {base_desc}")
                 for n_ in notes:
                     st.caption("※ " + n_)
                 if proj is None or proj.empty:
@@ -5104,8 +5144,8 @@ with tab0:
             st.info("먼저 아래 설정에서 사료빈 구역을 만드세요. (예: 고아 '1-2동' / '3동' / '4동'. 개체에 동이 없는 선산은 시험군으로 묶기)")
 
         st.markdown("---")
-        with st.expander("⚙️ 설정 — 구역 · 급여 기준 · 사료빈 재고 확인", expanded=not feed_zones):
-            set_zone, set_ration, set_check = st.tabs(["🏠 구역", "🥣 사료 급여량 (변경일별)", "📏 사료빈 재고 확인"])
+        with st.expander("⚙️ 설정 — 구역 · 사료 급여량 · 월말 사료량", expanded=not feed_zones):
+            set_zone, set_ration, set_check = st.tabs(["🏠 구역", "🥣 사료 급여량 (변경일별)", "📅 월말 사료량 · 오늘 재고"])
             bld_options = [f"{i}동" for i in range(1, farm_b_cnt + 1)]
             zone_names = [z for z, _ in feed_zones]
 
@@ -5232,19 +5272,16 @@ with tab0:
                 if not feed_zones:
                     st.caption("구역을 먼저 만드세요.")
                 else:
-                    st.caption("사료빈을 직접 확인한 날의 사료량(kg)을 넣으면 그날부터 다시 계산합니다. 계산의 출발점이므로 최소 한 번은 넣어야 합니다.")
-                    # 오늘 구역별 계산 사료량 — 사료빈을 확인하러 갈 때 실제 양과 비교해 보는 용도.
+                    single_zone = len(feed_zones) == 1
+                    # 오늘 구역별 계산 사료량: 전월 말 사료량에서 시작해 사료 변경일 급여량 × 두수를 빼고 매입을 더한 값.
                     today_d = datetime.now().date()
                     today_rows = []
                     for z, blds in feed_zones:
-                        last_chk = conn.execute(
-                            "SELECT check_date, quantity FROM feed_stock_check WHERE zone_name = ? AND check_date <= ? "
-                            "ORDER BY check_date DESC LIMIT 1", (z, today_d.isoformat())).fetchone()
-                        proj_t, _ = feed_stock_projection(conn, z, blds, today_d, 1, feed_zone_groups.get(z, []))
+                        proj_t, _, base_t = feed_stock_projection(conn, z, blds, today_d, 1, feed_zone_groups.get(z, []), single_zone)
                         r0 = proj_t.iloc[0] if proj_t is not None and not proj_t.empty else None
                         today_rows.append({
                             "구역": z,
-                            "마지막 확인": f"{str(last_chk[0])[:10]} · {float(last_chk[1]):,.0f}kg" if last_chk else "확인값 없음",
+                            "기준 (전월 말)": base_t or "월말 사료량 없음",
                             "두수": None if r0 is None else int(r0["두수"]),
                             "두당 일급여량": None if r0 is None else float(r0["일급여량"]),
                             "일총급여량": None if r0 is None else float(r0["일총급여량"]),
@@ -5258,43 +5295,123 @@ with tab0:
                             "두당 일급여량": st.column_config.NumberColumn("두당 일급여량 (kg)", format="%.1f"),
                             "일총급여량": st.column_config.NumberColumn("일총급여량 (kg)", format="localized"),
                             "오늘 사료량": st.column_config.NumberColumn("오늘 사료량 (kg)", format="localized",
-                                                                    help="마지막 확인값 − 그 뒤 급여량 + 그 뒤 사료 매입"),
+                                                                    help="전월 말 사료량 − 그 뒤 날마다 (두수 × 두당 일급여량) + 그 뒤 사료 매입"),
                         },
                     )
-                    st.caption("사료 변경일·급여량, 매입 등록(구역 지정)이 바뀌면 바로 다시 계산됩니다. "
-                               "확인값이 없는 구역은 아래에서 사료빈 사료량을 넣어야 계산됩니다.")
-                    with st.form("feed_check_form", clear_on_submit=True):
-                        fc1, fc2, fc3 = st.columns(3)
-                        chk_zone = fc1.selectbox("구역", zone_names)
-                        chk_date = fc2.date_input("확인 날짜", value=datetime.now().date(), format="YYYY-MM-DD")
-                        chk_qty = fc3.number_input("사료량 (kg)", min_value=0, step=100, value=0)
-                        if st.form_submit_button("재고 확인값 저장", type="primary"):
-                            wc = db_connect(DB_FILE)
-                            # 같은 구역·날짜 값이 있으면 바꾼다.
-                            wc.execute("DELETE FROM feed_stock_check WHERE zone_name = ? AND check_date = ?", (chk_zone, chk_date.isoformat()))
-                            wc.execute("INSERT INTO feed_stock_check (zone_name, check_date, quantity) VALUES (?, ?, ?)",
-                                       (chk_zone, chk_date.isoformat(), float(chk_qty)))
-                            wc.commit(); wc.close()
-                            notify(f"'{chk_zone}' {chk_date.isoformat()} 사료량 {chk_qty:,}kg 저장", icon="✅")
-                            st.rerun()
-                    checks_df = pd.read_sql("SELECT zone_name AS 구역, check_date AS 확인날짜, quantity AS 사료량 FROM feed_stock_check "
-                                            "ORDER BY check_date DESC, zone_name", conn)
-                    if not checks_df.empty:
-                        checks_df.insert(0, "삭제", False)
-                        checks_edit = farm_data_editor(
-                            checks_df, hide_index=True, width="stretch", num_rows="fixed",
-                            disabled=["구역", "확인날짜", "사료량"], key="feed_check_editor",
-                            column_config={"삭제": st.column_config.CheckboxColumn("삭제", width=50),
-                                           "사료량": st.column_config.NumberColumn("사료량 (kg)", format="localized")},
-                        )
-                        to_del = checks_edit[checks_edit["삭제"].fillna(False).astype(bool)]
-                        if st.button(f"체크한 확인값 {len(to_del)}건 삭제", disabled=to_del.empty, key="feed_check_del"):
-                            wc = db_connect(DB_FILE)
-                            for r in to_del.itertuples(index=False):
-                                wc.execute("DELETE FROM feed_stock_check WHERE zone_name = ? AND check_date = ?", (r.구역, r.확인날짜))
-                            wc.commit(); wc.close()
-                            notify(f"재고 확인값 {len(to_del)}건 삭제", icon="🗑️")
-                            st.rerun()
+                    st.caption("오늘 사료량 = 전월 말 사료량 − 그 뒤 날마다 (두수 × 사료 변경일 기준 두당 일급여량) + 그 뒤 사료 매입. "
+                               "사료 변경일·급여량, 매입 등록, 월말 사용량 등록이 바뀌면 바로 다시 계산됩니다.")
+
+                    # ----- 월말 사료량 (계산 출발점) -----
+                    st.markdown("---")
+                    st.markdown("###### 📅 월말 사료량 (계산 출발점)")
+                    me_opts = []
+                    md = month_end_before(today_d)
+                    for _ in range(12):
+                        me_opts.append(md)
+                        md = month_end_before(md)
+                    me_day = st.selectbox("월말", me_opts, format_func=lambda d_: d_.strftime("%Y-%m-%d"), key="feed_me_day")
+                    book_qty, used_ok = book_feed_stock(conn, me_day)
+                    st.markdown(f"그날 **'사료' 장부 재고 (농장 전체): {book_qty:,.0f}kg** "
+                                f"<span style='color:#5F6F66'>(사료 매입 누계 − {me_day:%Y-%m}월까지 월말 등록 사용량)</span>",
+                                unsafe_allow_html=True)
+                    if not used_ok:
+                        st.caption(f"※ {me_day:%Y-%m}월 사료 사용량이 '💰 월말 등록'에 아직 없어 그 달 사용분이 빠진 값입니다.")
+                    saved_me = dict(conn.execute("SELECT zone_name, quantity FROM feed_stock_check WHERE check_date = ?",
+                                                 (me_day.isoformat(),)).fetchall())
+                    if single_zone:
+                        z0 = zone_names[0]
+                        if z0 in saved_me:
+                            st.info(f"'{z0}' 구역은 {me_day:%Y-%m-%d} 직접 입력한 값 **{float(saved_me[z0]):,.0f}kg**을 씁니다 (장부 재고 대신).")
+                            if st.button("직접 입력값 지우고 장부 재고 쓰기", key="feed_me_clear"):
+                                wc = db_connect(DB_FILE)
+                                wc.execute("DELETE FROM feed_stock_check WHERE zone_name = ? AND check_date = ?", (z0, me_day.isoformat()))
+                                wc.commit(); wc.close()
+                                notify("월말 직접 입력값을 지웠습니다. 장부 재고로 계산합니다.", icon="🗑️")
+                                st.rerun()
+                        else:
+                            st.success(f"구역이 하나('{z0}')라 이 장부 재고를 그대로 계산 출발점으로 씁니다. 입력할 것이 없습니다.")
+                        with st.expander("실제 사료빈 양이 장부와 다르면 직접 입력"):
+                            with st.form("feed_me_single_form"):
+                                me_val = st.number_input(f"{me_day:%Y-%m-%d} '{z0}' 사료량 (kg)", min_value=0.0, step=100.0,
+                                                         value=float(saved_me.get(z0, max(book_qty, 0.0))), format="%.0f")
+                                if st.form_submit_button("직접 입력값 저장", type="primary"):
+                                    wc = db_connect(DB_FILE)
+                                    wc.execute("DELETE FROM feed_stock_check WHERE zone_name = ? AND check_date = ?", (z0, me_day.isoformat()))
+                                    wc.execute("INSERT INTO feed_stock_check (zone_name, check_date, quantity) VALUES (?, ?, ?)",
+                                               (z0, me_day.isoformat(), float(me_val)))
+                                    wc.commit(); wc.close()
+                                    notify(f"'{z0}' {me_day:%Y-%m-%d} 사료량 {me_val:,.0f}kg 저장", icon="✅")
+                                    st.rerun()
+                    else:
+                        # 구역이 여러 개면 월말에 구역별 사료량을 직접 넣는다. 처음에는 그날 두수 비율로 나눈 값을 채워 둔다.
+                        heads_by_zone = {}
+                        cattle_me = pd.read_sql("SELECT building, test_group_code, admission_date, closure_date FROM cattle", conn)
+                        for z, blds in feed_zones:
+                            keys_ = {_bld_key(b) for b in blds}
+                            grps_ = set(feed_zone_groups.get(z, []))
+                            heads_by_zone[z] = sum(
+                                1 for r in cattle_me.itertuples(index=False)
+                                if ((keys_ and _bld_key(r.building) in keys_) or (grps_ and r.test_group_code in grps_))
+                                and (_parse_day(r.admission_date) is None or _parse_day(r.admission_date) <= me_day)
+                                and (_parse_day(r.closure_date) is None or _parse_day(r.closure_date) > me_day))
+                        head_sum = sum(heads_by_zone.values())
+                        st.caption("구역이 여러 개라 월말에 구역별 사료빈 양을 넣어야 합니다. "
+                                   + ("이미 저장한 값이 있습니다." if saved_me else "처음에는 그날 두수 비율로 장부 재고를 나눈 값이 채워져 있습니다."))
+                        with st.form(f"feed_me_multi_form_{me_day}"):
+                            me_cols = st.columns(len(feed_zones))
+                            me_vals = {}
+                            for col, (z, _) in zip(me_cols, feed_zones):
+                                guess = (max(book_qty, 0.0) * heads_by_zone[z] / head_sum) if head_sum else 0.0
+                                me_vals[z] = col.number_input(f"{z} ({heads_by_zone[z]:,}두) kg", min_value=0.0, step=100.0, format="%.0f",
+                                                              value=float(saved_me.get(z, round(guess))))
+                            if st.form_submit_button("월말 구역별 사료량 저장", type="primary"):
+                                wc = db_connect(DB_FILE)
+                                for z, v in me_vals.items():
+                                    wc.execute("DELETE FROM feed_stock_check WHERE zone_name = ? AND check_date = ?", (z, me_day.isoformat()))
+                                    wc.execute("INSERT INTO feed_stock_check (zone_name, check_date, quantity) VALUES (?, ?, ?)",
+                                               (z, me_day.isoformat(), float(v)))
+                                wc.commit(); wc.close()
+                                notify(f"{me_day:%Y-%m-%d} 구역별 사료량 저장 (합계 {sum(me_vals.values()):,.0f}kg)", icon="✅")
+                                st.rerun()
+                        if saved_me:
+                            diff = sum(float(v) for v in saved_me.values()) - book_qty
+                            st.caption(f"저장한 구역별 합계 {sum(float(v) for v in saved_me.values()):,.0f}kg · 장부 재고와 차이 {diff:+,.0f}kg")
+
+                    # ----- 중간 확인 (선택) -----
+                    with st.expander("📏 중간에 사료빈을 직접 확인했을 때 (선택)"):
+                        st.caption("월 중간에 사료빈 양을 직접 확인했다면 넣으세요. 그날부터 그 값으로 다시 맞춰 계산합니다.")
+                        with st.form("feed_check_form", clear_on_submit=True):
+                            fc1, fc2, fc3 = st.columns(3)
+                            chk_zone = fc1.selectbox("구역", zone_names)
+                            chk_date = fc2.date_input("확인 날짜", value=datetime.now().date(), format="YYYY-MM-DD")
+                            chk_qty = fc3.number_input("사료량 (kg)", min_value=0, step=100, value=0)
+                            if st.form_submit_button("확인값 저장", type="primary"):
+                                wc = db_connect(DB_FILE)
+                                # 같은 구역·날짜 값이 있으면 바꾼다.
+                                wc.execute("DELETE FROM feed_stock_check WHERE zone_name = ? AND check_date = ?", (chk_zone, chk_date.isoformat()))
+                                wc.execute("INSERT INTO feed_stock_check (zone_name, check_date, quantity) VALUES (?, ?, ?)",
+                                           (chk_zone, chk_date.isoformat(), float(chk_qty)))
+                                wc.commit(); wc.close()
+                                notify(f"'{chk_zone}' {chk_date.isoformat()} 사료량 {chk_qty:,}kg 저장", icon="✅")
+                                st.rerun()
+                        checks_df = pd.read_sql("SELECT zone_name AS 구역, check_date AS 확인날짜, quantity AS 사료량 FROM feed_stock_check "
+                                                "ORDER BY check_date DESC, zone_name", conn)
+                        if not checks_df.empty:
+                            checks_df.insert(0, "삭제", False)
+                            checks_edit = farm_data_editor(
+                                checks_df, hide_index=True, width="stretch", num_rows="fixed",
+                                disabled=["구역", "확인날짜", "사료량"], key="feed_check_editor",
+                                column_config={"삭제": st.column_config.CheckboxColumn("삭제", width=50),
+                                               "사료량": st.column_config.NumberColumn("사료량 (kg)", format="localized")},
+                            )
+                            to_del = checks_edit[checks_edit["삭제"].fillna(False).astype(bool)]
+                            if st.button(f"체크한 값 {len(to_del)}건 삭제", disabled=to_del.empty, key="feed_check_del"):
+                                wc = db_connect(DB_FILE)
+                                for r in to_del.itertuples(index=False):
+                                    wc.execute("DELETE FROM feed_stock_check WHERE zone_name = ? AND check_date = ?", (r.구역, r.확인날짜))
+                                wc.commit(); wc.close()
+                                notify(f"사료량 값 {len(to_del)}건 삭제", icon="🗑️")
+                                st.rerun()
 
     with sub_stock_count:
         st.subheader("🧾 재고조사표")
