@@ -484,22 +484,24 @@ def month_view_select(conn, table, key, default_month):
     return left.selectbox("조회 연월", months, key=key)
 
 
-def item_entry_table(key, codes, names, columns, info=None, name_label="품목"):
+def item_entry_table(key, codes, names, columns, info=None, name_label="품목", defaults=None):
     """여러 품목/항목을 한 번에 등록하는 입력표. 전체 품목을 줄마다 미리 나열해 두고,
     이번에 들어온(쓴) 품목 옆에만 숫자를 넣게 한다. 숫자를 넣지 않은 줄은 무시된다.
     (편집표의 글자 칸에 바로 한글을 치면 첫 글자가 영문으로 들어가는 문제가 있어 숫자만 입력받는다.)
     columns 는 입력받을 숫자 열 {열 이름: column_config},
     info 는 참고용으로만 보여 줄 열 {열 이름: (값 목록, column_config)}.
+    defaults 는 미리 채워 둘 값 {코드: {열 이름: 값}} (예: 그 달 입식우 가축보험료).
     반환값은 숫자가 하나라도 들어간 줄만 (코드 열 포함). 등록이 끝나면 reset_item_entry(key) 로 비운다."""
     info = info or {}
+    defaults = defaults or {}
     ver = st.session_state.setdefault(f"_{key}_ver", 0)
     df = pd.DataFrame({"코드": list(codes), "항목": list(names)})
     for col, (values, _) in info.items():
         df[col] = list(values)
     for col in columns:
-        df[col] = pd.Series([None] * len(df), dtype="float")
-    # 품목 구성이 바뀌면(품목 추가·삭제) 줄이 달라지므로 편집표 키도 바꾼다.
-    sig = hashlib.md5("|".join(map(str, codes)).encode("utf-8")).hexdigest()[:10]
+        df[col] = pd.Series([defaults.get(c, {}).get(col) for c in codes], dtype="float")
+    # 품목 구성이나 미리 채울 값이 바뀌면(품목 추가·삭제, 정산연월 변경) 줄이 달라지므로 편집표 키도 바꾼다.
+    sig = hashlib.md5(("|".join(map(str, codes)) + repr(sorted(defaults.items()))).encode("utf-8")).hexdigest()[:10]
     edited = farm_data_editor(
         df, width="stretch", hide_index=True, num_rows="fixed", placeholder="",
         disabled=["코드", "항목", *info], column_order=["항목", *info, *columns],
@@ -5035,11 +5037,34 @@ with tab2:
 
         # 여러 지출 항목을 한 번에 등록한다. 금액 칸은 천단위 콤마로 표시된다.
         fc_items = ["인건비", "전기세", "시험사양수고비", "CCTV사용료", "우수등급장려금", "가축보험료", "기타"]
+        # 가축보험료는 그 달(정산연월)에 입식한 개체들의 개체별 보험료 합계를 미리 채운다 (고쳐서 등록 가능).
+        # 회사 전산과 같이 말일에 입식한 개체는 다음 달 보험료로 넣는다 (예: 4/30 입식 → 5월).
+        ins_heads, ins_total = 0, 0.0
+        if re.fullmatch(r"\d{4}-\d{2}", str(fc_month).strip()):
+            fc_start, fc_end, fc_prev_end = _month_bounds(str(fc_month).strip())
+            ins_heads, ins_total = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(insurance_premium), 0) FROM cattle "
+                "WHERE (admission_date >= ? AND admission_date < ?) OR admission_date = ?",
+                (fc_start, fc_end, fc_prev_end),
+            ).fetchone()
+            ins_total = float(ins_total or 0)
         fc_input_df = item_entry_table(
             "fc_entry", fc_items, fc_items,
             {"금액": st.column_config.NumberColumn("총 청구금액 (원)", min_value=0, format="localized", alignment="right")},
             name_label="지출 항목",
+            defaults={"가축보험료": {"금액": ins_total}} if ins_total > 0 else None,
         )
+        if ins_heads and ins_total > 0:
+            st.caption(f"가축보험료: {fc_month} 입식 {ins_heads:,}두(전월 말일 입식 포함, 이달 말일 입식은 다음 달로)의 개체별 보험료 합계 **{ins_total:,.0f}원**을 자동으로 넣었습니다.")
+        elif ins_heads:
+            st.caption(f"가축보험료: {fc_month} 입식 {ins_heads:,}두가 있지만 개체별 보험료가 비어 있어 자동으로 넣지 못했습니다. "
+                       "개체관리대장의 보험료를 확인하세요.")
+        already_ins = conn.execute(
+            "SELECT COALESCE(SUM(total_billed_amount), 0) FROM monthly_fixedcost WHERE settlement_month = ? AND expense_item = '가축보험료'",
+            (str(fc_month).strip(),),
+        ).fetchone()[0]
+        if already_ins and float(already_ins) > 0:
+            st.warning(f"{fc_month}에 가축보험료가 이미 {float(already_ins):,.0f}원 등록되어 있습니다. 다시 등록하면 두 번 들어가니, 가축보험료 칸을 비우고 등록하세요.")
         if not fc_input_df.empty:
             show_table_total(len(fc_input_df), "청구금액",
                              pd.to_numeric(fc_input_df["금액"], errors="coerce").fillna(0).sum())
