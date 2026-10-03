@@ -2389,18 +2389,11 @@ def cost_allocation_excel(groups, rows, month, farm_label, actual, diff_note, wr
 # ========== 사료 재고 예측 (사료빈 구역별) ==========
 # 사료빈 구역(동 묶음)마다 하루씩 사료량을 이어서 계산한다.
 #   두수        = 그 구역 동에서 그날 사육중인 두수 (입식 당일은 절식이라 다음 날부터, 출하·폐사일은 제외)
-#   일총급여량  = 개체마다 그날 개월령에 맞는 두당 일급여량(급여 기준)을 더한 값
+#   일급여량    = 그날 적용되는 두당 일급여량 (구역별 '사료 변경일' 표에서 그날 이전의 가장 최근 변경값)
+#   일총급여량  = 두수 × 일급여량
 #   사료량      = 전날 사료량 − 전날 일총급여량 + 그날 사료 매입(매입 등록에서 이 구역으로 넣은 '사료' 분류 품목)
 #   사료빈 재고 확인값이 있는 날은 그 값으로 다시 맞춘다 (실측이 계산보다 우선).
 # 사료 품목이 바뀌어도 구역 단위로 '사료' 분류 매입을 모두 더하므로 그대로 이어진다.
-def _age_months(birth, day):
-    """개월령 — 개체관리대장과 같은 셈 (태어나면 1개월: 만 개월 + 1)."""
-    m = (day.year - birth.year) * 12 + (day.month - birth.month)
-    if day.day < birth.day:
-        m -= 1
-    return m + 1
-
-
 def _bld_key(v):
     """'1동' / '1' / ' 1 동' → '1' (동 이름 비교용)"""
     return str(v or "").replace("동", "").strip()
@@ -2445,29 +2438,30 @@ def feed_stock_projection(conn, zone, buildings, start, days, test_groups=()):
     if not before:
         notes.append(f"{sim_from:%m-%d} 이전에는 재고 확인값이 없어 그날부터 계산합니다.")
 
-    rations = pd.read_sql("SELECT from_month, kg_per_head FROM feed_ration WHERE zone_name = ? ORDER BY from_month",
-                          conn, params=(zone,))
-    ration_steps = [(int(r.from_month), float(r.kg_per_head)) for r in rations.itertuples(index=False)]
-    if not ration_steps:
-        notes.append("급여 기준(개월령별 두당 일급여량)이 없어 급여량이 0으로 계산됩니다. 아래 설정에서 넣으세요.")
+    # 사료 급여량은 날짜(사료 변경일)에 따라 바뀐다. 그날 이전의 가장 최근 변경값을 쓴다.
+    sched = pd.read_sql("SELECT change_date, kg_per_head FROM feed_schedule WHERE zone_name = ? ORDER BY change_date",
+                        conn, params=(zone,))
+    steps = sorted((_parse_day(r.change_date), float(r.kg_per_head)) for r in sched.itertuples(index=False)
+                   if _parse_day(r.change_date))
+    if not steps:
+        notes.append("사료 급여량(변경일별 두당 일급여량)이 없어 급여량이 0으로 계산됩니다. 아래 설정에서 넣으세요.")
+    elif steps[0][0] > sim_from:
+        notes.append(f"첫 사료 변경일({steps[0][0]:%m-%d}) 이전 날짜는 그 급여량({steps[0][1]:g}kg)으로 계산했습니다.")
 
-    def kg_for(age):
-        kg = ration_steps[0][1] if ration_steps else 0.0
-        for from_m, v in ration_steps:
-            if age >= from_m:
+    def kg_on(day):
+        kg = steps[0][1] if steps else 0.0
+        for change_day, v in steps:
+            if change_day <= day:
                 kg = v
         return kg
 
     # 구역에 속한 개체: 지정한 동에 있거나, 지정한 시험군에 속한 개체 (둘 중 하나만 맞아도 포함)
     keys = {_bld_key(b) for b in buildings}
     groups = set(test_groups)
-    cattle = pd.read_sql("SELECT building, test_group_code, birth_date, admission_date, closure_date FROM cattle", conn)
-    herd = [(_parse_day(r.birth_date), _parse_day(r.admission_date), _parse_day(r.closure_date))
+    cattle = pd.read_sql("SELECT building, test_group_code, admission_date, closure_date FROM cattle", conn)
+    herd = [(_parse_day(r.admission_date), _parse_day(r.closure_date))
             for r in cattle.itertuples(index=False)
             if (keys and _bld_key(r.building) in keys) or (groups and r.test_group_code in groups)]
-    no_birth = sum(1 for b, _, _ in herd if b is None)
-    if no_birth:
-        notes.append(f"생년월일이 없는 {no_birth}두는 급여 기준의 첫 줄 급여량으로 계산했습니다.")
 
     pur = pd.read_sql("""
         SELECT p.purchase_date AS d, SUM(p.quantity) AS q
@@ -2480,18 +2474,16 @@ def feed_stock_projection(conn, zone, buildings, start, days, test_groups=()):
     rows, stock, prev_total = [], None, 0.0
     d = sim_from
     while d <= end:
-        heads, total = 0, 0.0
-        for birth, adm, clo in herd:
-            if (adm is None or adm < d) and (clo is None or clo > d):
-                heads += 1
-                total += kg_for(_age_months(birth, d)) if birth else kg_for(0)
+        heads = sum(1 for adm, clo in herd if (adm is None or adm < d) and (clo is None or clo > d))
+        per_head = kg_on(d)
+        total = heads * per_head
         bought = pur_of.get(d, 0.0)
         stock = check_of[d] if d == sim_from else stock - prev_total + bought
         checked = check_of.get(d)
         if checked is not None:
             stock = checked
         if d >= start:
-            rows.append({"날짜": d, "두수": heads, "일급여량": (total / heads) if heads else 0.0,
+            rows.append({"날짜": d, "두수": heads, "일급여량": per_head,
                          "일총급여량": total, "사료량": stock, "사료매입": bought, "재고확인": checked})
         prev_total = total
         d += timedelta(days=1)
@@ -4900,7 +4892,7 @@ with tab0:
 
     with sub_feed:
         st.subheader("🌾 사료 재고 (사료빈 구역별)")
-        st.caption("구역마다 날짜별 두수 · 두당 일급여량(개월령 기준) · 일총급여량 · 사료량 · 사료 매입을 계산합니다. "
+        st.caption("구역마다 날짜별 두수 · 두당 일급여량(사료 변경일 기준) · 일총급여량 · 사료량 · 사료 매입을 계산합니다. "
                    "사료량 = 전날 사료량 − 전날 일총급여량 + 그날 매입(매입 등록에서 이 구역으로 넣은 '사료' 품목). "
                    "사료빈 재고 확인값을 넣은 날은 그 값으로 다시 맞춥니다.")
         feed_zones = load_feed_zones(conn)
@@ -4961,7 +4953,7 @@ with tab0:
 
         st.markdown("---")
         with st.expander("⚙️ 설정 — 구역 · 급여 기준 · 사료빈 재고 확인", expanded=not feed_zones):
-            set_zone, set_ration, set_check = st.tabs(["🏠 구역", "🥣 급여 기준 (개월령별)", "📏 사료빈 재고 확인"])
+            set_zone, set_ration, set_check = st.tabs(["🏠 구역", "🥣 사료 급여량 (변경일별)", "📏 사료빈 재고 확인"])
             bld_options = [f"{i}동" for i in range(1, farm_b_cnt + 1)]
             zone_names = [z for z, _ in feed_zones]
 
@@ -5011,11 +5003,11 @@ with tab0:
                         wc.commit(); wc.close()
                         notify(f"'{edit_zone}' 구역의 동·시험군을 수정했습니다.", icon="✅")
                         st.rerun()
-                    del_ok = st.checkbox(f"'{edit_zone}' 구역과 그 급여 기준·재고 확인값을 삭제합니다 (매입 기록은 남습니다)",
+                    del_ok = st.checkbox(f"'{edit_zone}' 구역과 그 사료 급여량·재고 확인값을 삭제합니다 (매입 기록은 남습니다)",
                                          key=f"feed_zone_del_ok_{edit_zone}")
                     if zb2.button("구역 삭제", width="stretch", disabled=not del_ok, key="feed_zone_del"):
                         wc = db_connect(DB_FILE)
-                        for tbl in ("feed_ration", "feed_stock_check", "feed_zone"):
+                        for tbl in ("feed_schedule", "feed_stock_check", "feed_zone"):
                             wc.execute(f"DELETE FROM {tbl} WHERE zone_name = ?", (edit_zone,))
                         wc.commit(); wc.close()
                         notify(f"사료 구역 '{edit_zone}' 삭제", icon="🗑️")
@@ -5025,13 +5017,13 @@ with tab0:
                 if not feed_zones:
                     st.caption("구역을 먼저 만드세요.")
                 else:
-                    st.caption("개월령(태어나면 1개월)이 '부터' 값 이상이면 그 줄의 두당 일급여량을 씁니다. "
-                               "예: 7개월부터 4kg, 10개월부터 6kg, 14개월부터 8kg. 구역(시험군)마다 따로 정합니다.")
+                    st.caption("사료 급여량을 바꾼 날짜(변경일)와 그날부터의 두당 일급여량을 넣습니다. "
+                               "다음 변경일 전날까지 그 급여량으로 계산합니다. 예: 10-01 4kg, 10-20 4.5kg, 11-10 5kg. 구역마다 따로 정합니다.")
                     ration_zone = st.selectbox("구역", zone_names, key="feed_ration_zone")
-                    cur_ration = pd.read_sql("SELECT from_month, kg_per_head FROM feed_ration WHERE zone_name = ? ORDER BY from_month",
+                    cur_ration = pd.read_sql("SELECT change_date, kg_per_head FROM feed_schedule WHERE zone_name = ? ORDER BY change_date",
                                              conn, params=(ration_zone,))
                     ration_base = pd.DataFrame({
-                        "부터": pd.Series(pd.to_numeric(cur_ration["from_month"]).tolist() + [None] * 3, dtype="float"),
+                        "변경일": pd.Series([_parse_day(v) for v in cur_ration["change_date"]] + [None] * 3, dtype="object"),
                         "일급여량": pd.Series(pd.to_numeric(cur_ration["kg_per_head"]).tolist() + [None] * 3, dtype="float"),
                     })
                     ration_ver = st.session_state.setdefault("_feed_ration_ver", 0)
@@ -5039,34 +5031,35 @@ with tab0:
                         ration_base, hide_index=True, num_rows="dynamic", placeholder="", width="stretch",
                         key=f"feed_ration_editor_{ration_zone}_{ration_ver}",
                         column_config={
-                            "부터": st.column_config.NumberColumn("개월령 (부터)", min_value=0, max_value=60, step=1, format="%d"),
+                            "변경일": st.column_config.DateColumn("사료 변경일", format="YYYY-MM-DD"),
                             "일급여량": st.column_config.NumberColumn("두당 일급여량 (kg)", min_value=0, step=0.1, format="%.1f"),
                         },
                     )
                     other_zones = [z for z in zone_names if z != ration_zone]
-                    if st.button("급여 기준 저장", type="primary", width="stretch", key="feed_ration_save"):
-                        valid = ration_edit.dropna(subset=["부터", "일급여량"])
-                        if valid["부터"].duplicated().any():
-                            st.warning("같은 개월령이 두 줄 있습니다. 한 줄로 정리하세요.")
+                    if st.button("사료 급여량 저장", type="primary", width="stretch", key="feed_ration_save"):
+                        valid = ration_edit.dropna(subset=["변경일", "일급여량"]).copy()
+                        valid["변경일"] = [pd.to_datetime(v).strftime("%Y-%m-%d") for v in valid["변경일"]]
+                        if valid["변경일"].duplicated().any():
+                            st.warning("같은 변경일이 두 줄 있습니다. 한 줄로 정리하세요.")
                         else:
                             wc = db_connect(DB_FILE)
-                            wc.execute("DELETE FROM feed_ration WHERE zone_name = ?", (ration_zone,))
-                            wc.executemany("INSERT INTO feed_ration (zone_name, from_month, kg_per_head) VALUES (?, ?, ?)",
-                                           [(ration_zone, int(r.부터), float(r.일급여량)) for r in valid.itertuples(index=False)])
+                            wc.execute("DELETE FROM feed_schedule WHERE zone_name = ?", (ration_zone,))
+                            wc.executemany("INSERT INTO feed_schedule (zone_name, change_date, kg_per_head) VALUES (?, ?, ?)",
+                                           [(ration_zone, r.변경일, float(r.일급여량)) for r in valid.itertuples(index=False)])
                             wc.commit(); wc.close()
                             st.session_state["_feed_ration_ver"] = ration_ver + 1
-                            notify(f"'{ration_zone}' 급여 기준 {len(valid)}줄 저장", icon="✅")
+                            notify(f"'{ration_zone}' 사료 급여량 {len(valid)}줄 저장", icon="✅")
                             st.rerun()
                     if other_zones and not cur_ration.empty:
-                        copy_to = st.multiselect("이 급여 기준을 다른 구역에도 똑같이 적용", other_zones, key="feed_ration_copy_to")
+                        copy_to = st.multiselect("이 사료 급여량을 다른 구역에도 똑같이 적용", other_zones, key="feed_ration_copy_to")
                         if st.button("선택한 구역에 복사", width="stretch", disabled=not copy_to, key="feed_ration_copy"):
                             wc = db_connect(DB_FILE)
                             for z in copy_to:
-                                wc.execute("DELETE FROM feed_ration WHERE zone_name = ?", (z,))
-                                wc.executemany("INSERT INTO feed_ration (zone_name, from_month, kg_per_head) VALUES (?, ?, ?)",
-                                               [(z, int(r.from_month), float(r.kg_per_head)) for r in cur_ration.itertuples(index=False)])
+                                wc.execute("DELETE FROM feed_schedule WHERE zone_name = ?", (z,))
+                                wc.executemany("INSERT INTO feed_schedule (zone_name, change_date, kg_per_head) VALUES (?, ?, ?)",
+                                               [(z, r.change_date, float(r.kg_per_head)) for r in cur_ration.itertuples(index=False)])
                             wc.commit(); wc.close()
-                            notify(f"급여 기준을 {', '.join(copy_to)}에 복사했습니다.", icon="✅")
+                            notify(f"사료 급여량을 {', '.join(copy_to)}에 복사했습니다.", icon="✅")
                             st.rerun()
 
             with set_check:

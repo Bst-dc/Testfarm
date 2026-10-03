@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS cattle_item_usage_log (
     UNIQUE (cattle_id, settlement_month, item_code)
 );
 
--- 사료 재고 예측: 사료빈 구역(동 묶음), 구역별 월령별 두당 일급여량, 사료빈 실제 재고 확인값
+-- 사료 재고 예측: 사료빈 구역(동 묶음), 구역별 사료 변경일별 두당 일급여량, 사료빈 실제 재고 확인값
 CREATE TABLE IF NOT EXISTS feed_zone (
     zone_id INTEGER PRIMARY KEY AUTOINCREMENT,
     zone_name TEXT NOT NULL UNIQUE,
@@ -115,11 +115,11 @@ CREATE TABLE IF NOT EXISTS feed_zone (
     test_groups TEXT
 );
 
-CREATE TABLE IF NOT EXISTS feed_ration (
+CREATE TABLE IF NOT EXISTS feed_schedule (
     zone_name TEXT NOT NULL,
-    from_month INTEGER NOT NULL,
+    change_date DATE NOT NULL,
     kg_per_head NUMERIC(10, 2) NOT NULL,
-    PRIMARY KEY (zone_name, from_month)
+    PRIMARY KEY (zone_name, change_date)
 );
 
 CREATE TABLE IF NOT EXISTS feed_stock_check (
@@ -179,5 +179,5 @@ PG_DDL = re.sub(
 DB_TABLES = [
     "testgroup_master", "cattle", "item_master", "disease_record", "purchase",
     "monthly_usage", "monthly_fixedcost", "cattle_cost_log", "cattle_item_usage_log",
-    "feed_zone", "feed_ration", "feed_stock_check",
+    "feed_zone", "feed_schedule", "feed_stock_check",
 ]
