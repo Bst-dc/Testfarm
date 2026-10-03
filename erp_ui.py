@@ -5102,14 +5102,18 @@ with tab2:
     else:
         _fm = re.fullmatch(r"(구미)(.+)농장", selected_farm)
         default_ca_label = f"{_fm.group(1)}({_fm.group(2)})시험농장" if _fm else selected_farm.replace("농장", "시험농장")
-        ca1, ca2, ca3 = st.columns([1, 1, 2])
+        # 입력칸 키에 농장 이름을 넣어, 농장을 바꿨을 때 앞 농장의 제목(농장 표기)이 따라오지 않게 한다.
+        ca1, ca2, ca3, ca4 = st.columns(4)
         with ca1:
-            # 입력칸 키에 농장 이름을 넣어, 농장을 바꿨을 때 앞 농장의 제목(농장 표기)이 따라오지 않게 한다.
             ca_farm_label = st.text_input("농장 표기", value=default_ca_label, key=f"cost_alloc_farm_label_{selected_farm}")
-        with ca2:
-            ca_writers = st.text_input("작성자 (쉼표로 구분)", value="신민석, 배성태, 이상욱", key=f"cost_alloc_writers_{selected_farm}")
-        with ca3:
-            ca_diff_note = st.text_input("차액분 메모", placeholder="차액이 있으면 사유를 적으세요", key=f"cost_alloc_diff_note_{selected_farm}")
+        # 재고조사표의 조사자·입회자처럼 작성자도 한 사람씩 칸을 둔다. 빈 칸은 인쇄물에서 빠진다.
+        ca_writer_names = []
+        for col, default_name, n in zip((ca2, ca3, ca4), ("신민석", "배성태", "이상욱"), (1, 2, 3)):
+            with col:
+                ca_writer_names.append(st.text_input(f"작성자 {n}", value=default_name,
+                                                     key=f"cost_alloc_writer{n}_{selected_farm}"))
+        ca_writers = ", ".join(w.strip().replace(",", " ") for w in ca_writer_names if w.strip())
+        ca_diff_note = st.text_input("차액분 메모", placeholder="차액이 있으면 사유를 적으세요", key=f"cost_alloc_diff_note_{selected_farm}")
         ca_actual = st.session_state.get(f"_stock_actual_{cost_month}")
         ca_heads, _, _ = _cost_alloc_headers(ca_groups, cost_month)
         ca_vals = _cost_alloc_values(ca_rows, len(ca_groups), ca_actual)
