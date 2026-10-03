@@ -4407,8 +4407,8 @@ with tab1:
 
 with tab0:
     # 한 화면에 등록·내역·재고·품목이 몰려 있어 길고 복잡했으므로, 개체 관리 탭처럼 하위 탭으로 나눈다.
-    sub_pur_entry, sub_pur_hist, sub_stock, sub_feed, sub_stock_count, sub_items = st.tabs(
-        ["🚚 매입 등록", "📋 매입 내역", "📦 재고 현황", "🌾 사료 재고", "🧾 재고조사표", "🏷️ 품목 관리"])
+    sub_pur_entry, sub_pur_hist, sub_stock, sub_stock_count, sub_feed, sub_items = st.tabs(
+        ["🚚 매입 등록", "📋 매입 내역", "📦 재고 현황", "🧾 재고조사표", "🌾 사료 재고", "🏷️ 품목 관리"])
 
     with sub_items:
         col_item_form, col_item_list = st.columns([1, 2])
