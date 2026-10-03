@@ -5060,7 +5060,7 @@ with tab0:
         if feed_zones:
             ff1, ff2, _ = st.columns([1, 1, 2])
             with ff1:
-                feed_start = st.date_input("시작일", value=datetime.now().date(), key="feed_start")
+                feed_start = st.date_input("시작일", value=datetime.now().date(), format="YYYY-MM-DD", key="feed_start")
             with ff2:
                 feed_days = st.selectbox("기간", [14, 21, 31, 45], format_func=lambda n: f"{n}일", key="feed_days")
             feed_blocks = []
@@ -5174,34 +5174,48 @@ with tab0:
                     ration_zone = st.selectbox("구역", zone_names, key="feed_ration_zone")
                     cur_ration = pd.read_sql("SELECT change_date, kg_per_head FROM feed_schedule WHERE zone_name = ? ORDER BY change_date",
                                              conn, params=(ration_zone,))
-                    ration_base = pd.DataFrame({
-                        "변경일": pd.Series([_parse_day(v) for v in cur_ration["change_date"]] + [None] * 3, dtype="object"),
-                        "일급여량": pd.Series(pd.to_numeric(cur_ration["kg_per_head"]).tolist() + [None] * 3, dtype="float"),
-                    })
-                    ration_ver = st.session_state.setdefault("_feed_ration_ver", 0)
-                    ration_edit = farm_data_editor(
-                        ration_base, hide_index=True, num_rows="dynamic", placeholder="", width="stretch",
-                        key=f"feed_ration_editor_{ration_zone}_{ration_ver}",
-                        column_config={
-                            "변경일": st.column_config.DateColumn("사료 변경일", format="YYYY-MM-DD"),
-                            "일급여량": st.column_config.NumberColumn("두당 일급여량 (kg)", min_value=0, step=0.1, format="%.1f"),
-                        },
-                    )
-                    other_zones = [z for z in zone_names if z != ration_zone]
-                    if st.button("사료 급여량 저장", type="primary", width="stretch", key="feed_ration_save"):
-                        valid = ration_edit.dropna(subset=["변경일", "일급여량"]).copy()
-                        valid["변경일"] = [pd.to_datetime(v).strftime("%Y-%m-%d") for v in valid["변경일"]]
-                        if valid["변경일"].duplicated().any():
-                            st.warning("같은 변경일이 두 줄 있습니다. 한 줄로 정리하세요.")
-                        else:
+                    # 표 안의 날짜 칸은 달력·표시 형식이 낯설어 입력이 불편했으므로, 날짜는 'YYYY-MM-DD' 달력 입력칸으로 하나씩 넣는다.
+                    with st.form(f"feed_sched_form_{ration_zone}", clear_on_submit=True):
+                        sf1, sf2, sf3 = st.columns([1.2, 1, 0.8])
+                        new_change_day = sf1.date_input("사료 변경일", value=datetime.now().date(), format="YYYY-MM-DD")
+                        new_kg = sf2.number_input("두당 일급여량 (kg)", min_value=0.0, step=0.1, format="%.1f", value=None)
+                        sf3.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                        if sf3.form_submit_button("추가 / 변경", type="primary", width="stretch"):
+                            if new_kg is None:
+                                st.warning("두당 일급여량을 넣으세요.")
+                            else:
+                                wc = db_connect(DB_FILE)
+                                # 같은 날짜가 이미 있으면 새 값으로 바꾼다.
+                                wc.execute("DELETE FROM feed_schedule WHERE zone_name = ? AND change_date = ?",
+                                           (ration_zone, new_change_day.isoformat()))
+                                wc.execute("INSERT INTO feed_schedule (zone_name, change_date, kg_per_head) VALUES (?, ?, ?)",
+                                           (ration_zone, new_change_day.isoformat(), float(new_kg)))
+                                wc.commit(); wc.close()
+                                notify(f"'{ration_zone}' {new_change_day.isoformat()}부터 두당 {new_kg:g}kg 저장", icon="✅")
+                                st.rerun()
+                    if cur_ration.empty:
+                        st.caption("아직 등록된 사료 변경일이 없습니다.")
+                    else:
+                        sched_view = pd.DataFrame({
+                            "삭제": False,
+                            "사료 변경일": [str(v)[:10] for v in cur_ration["change_date"]],
+                            "두당 일급여량 (kg)": pd.to_numeric(cur_ration["kg_per_head"]).astype(float),
+                        })
+                        sched_edit = farm_data_editor(
+                            sched_view, hide_index=True, width="stretch", num_rows="fixed",
+                            disabled=["사료 변경일", "두당 일급여량 (kg)"], key=f"feed_sched_view_{ration_zone}",
+                            column_config={"삭제": st.column_config.CheckboxColumn("삭제", width=50),
+                                           "두당 일급여량 (kg)": st.column_config.NumberColumn(format="%.1f")},
+                        )
+                        sched_del = sched_edit[sched_edit["삭제"].fillna(False).astype(bool)]
+                        if st.button(f"체크한 변경일 {len(sched_del)}건 삭제", disabled=sched_del.empty, key="feed_sched_del"):
                             wc = db_connect(DB_FILE)
-                            wc.execute("DELETE FROM feed_schedule WHERE zone_name = ?", (ration_zone,))
-                            wc.executemany("INSERT INTO feed_schedule (zone_name, change_date, kg_per_head) VALUES (?, ?, ?)",
-                                           [(ration_zone, r.변경일, float(r.일급여량)) for r in valid.itertuples(index=False)])
+                            for d_ in sched_del["사료 변경일"]:
+                                wc.execute("DELETE FROM feed_schedule WHERE zone_name = ? AND change_date = ?", (ration_zone, d_))
                             wc.commit(); wc.close()
-                            st.session_state["_feed_ration_ver"] = ration_ver + 1
-                            notify(f"'{ration_zone}' 사료 급여량 {len(valid)}줄 저장", icon="✅")
+                            notify(f"사료 변경일 {len(sched_del)}건 삭제", icon="🗑️")
                             st.rerun()
+                    other_zones = [z for z in zone_names if z != ration_zone]
                     if other_zones and not cur_ration.empty:
                         copy_to = st.multiselect("이 사료 급여량을 다른 구역에도 똑같이 적용", other_zones, key="feed_ration_copy_to")
                         if st.button("선택한 구역에 복사", width="stretch", disabled=not copy_to, key="feed_ration_copy"):
@@ -5222,7 +5236,7 @@ with tab0:
                     with st.form("feed_check_form", clear_on_submit=True):
                         fc1, fc2, fc3 = st.columns(3)
                         chk_zone = fc1.selectbox("구역", zone_names)
-                        chk_date = fc2.date_input("확인 날짜", value=datetime.now().date())
+                        chk_date = fc2.date_input("확인 날짜", value=datetime.now().date(), format="YYYY-MM-DD")
                         chk_qty = fc3.number_input("사료량 (kg)", min_value=0, step=100, value=0)
                         if st.form_submit_button("재고 확인값 저장", type="primary"):
                             wc = db_connect(DB_FILE)
