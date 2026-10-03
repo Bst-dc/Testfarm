@@ -5233,6 +5233,36 @@ with tab0:
                     st.caption("구역을 먼저 만드세요.")
                 else:
                     st.caption("사료빈을 직접 확인한 날의 사료량(kg)을 넣으면 그날부터 다시 계산합니다. 계산의 출발점이므로 최소 한 번은 넣어야 합니다.")
+                    # 오늘 구역별 계산 사료량 — 사료빈을 확인하러 갈 때 실제 양과 비교해 보는 용도.
+                    today_d = datetime.now().date()
+                    today_rows = []
+                    for z, blds in feed_zones:
+                        last_chk = conn.execute(
+                            "SELECT check_date, quantity FROM feed_stock_check WHERE zone_name = ? AND check_date <= ? "
+                            "ORDER BY check_date DESC LIMIT 1", (z, today_d.isoformat())).fetchone()
+                        proj_t, _ = feed_stock_projection(conn, z, blds, today_d, 1, feed_zone_groups.get(z, []))
+                        r0 = proj_t.iloc[0] if proj_t is not None and not proj_t.empty else None
+                        today_rows.append({
+                            "구역": z,
+                            "마지막 확인": f"{str(last_chk[0])[:10]} · {float(last_chk[1]):,.0f}kg" if last_chk else "확인값 없음",
+                            "두수": None if r0 is None else int(r0["두수"]),
+                            "두당 일급여량": None if r0 is None else float(r0["일급여량"]),
+                            "일총급여량": None if r0 is None else float(r0["일총급여량"]),
+                            "오늘 사료량": None if r0 is None else float(r0["사료량"]),
+                        })
+                    st.markdown(f"###### 📦 오늘({today_d.isoformat()}) 구역별 사료 재고량 (계산값)")
+                    farm_dataframe(
+                        pd.DataFrame(today_rows), width="stretch", hide_index=True,
+                        column_config={
+                            "두수": st.column_config.NumberColumn("두수", format="localized"),
+                            "두당 일급여량": st.column_config.NumberColumn("두당 일급여량 (kg)", format="%.1f"),
+                            "일총급여량": st.column_config.NumberColumn("일총급여량 (kg)", format="localized"),
+                            "오늘 사료량": st.column_config.NumberColumn("오늘 사료량 (kg)", format="localized",
+                                                                    help="마지막 확인값 − 그 뒤 급여량 + 그 뒤 사료 매입"),
+                        },
+                    )
+                    st.caption("사료 변경일·급여량, 매입 등록(구역 지정)이 바뀌면 바로 다시 계산됩니다. "
+                               "확인값이 없는 구역은 아래에서 사료빈 사료량을 넣어야 계산됩니다.")
                     with st.form("feed_check_form", clear_on_submit=True):
                         fc1, fc2, fc3 = st.columns(3)
                         chk_zone = fc1.selectbox("구역", zone_names)
