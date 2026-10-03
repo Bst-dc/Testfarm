@@ -2278,21 +2278,67 @@ def generate_cost_allocation_sheet(groups, rows, month, farm_label, actual, diff
                     + "".join(f'<td class="n">{_stock_qty(v)}</td>' for v in vals) + "</tr>")
     writer_text = ", ".join(f"{esc(w.strip())}(인)" for w in str(writers).split(",") if w.strip())
     css = STOCK_COUNT_CSS.replace("size: A4 portrait", "size: A4 landscape").replace("max-width: 900px", "max-width: 1100px")
+    # 시험군·품목이 늘어도 A4 가로 한 장에 들어가도록, 칸 수와 줄 수에 맞춰 글자 크기·여백을 먼저 줄이고
+    # 인쇄 직전에(아래 스크립트) 실제 크기를 재서 그래도 넘치면 한 장에 맞게 축소한다.
+    n_cols, n_rows = 2 + len(heads), len(values)
+    body_px = 13 if n_cols <= 11 else 12 if n_cols <= 13 else 11
+    if n_rows > 22:
+        body_px -= 1
+    pad_y = 5 if n_rows <= 16 else 3 if n_rows <= 24 else 2
+    # 숫자 칸은 모두 같은 너비로 나눈다 (시험군 이름이 긴 칸만 넓어지고 뒤쪽 칸이 찌그러지지 않게).
+    num_w = 83 / max(len(heads), 1)
+    grp_ths = "".join(f'<th class="grp" style="width:{num_w:.2f}%">{h}</th>' for h in heads[:len(groups)])
+    other_ths = "".join(f'<th style="width:{num_w:.2f}%">{h}</th>' for h in heads[len(groups):])
     return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(title)}</title>
 <style>{css}
 .foot {{ padding: 7px 2px; }}
-th {{ font-size: 12px; }}
+table {{ font-size: {body_px}px; }}
+th, td {{ padding: {pad_y}px 5px; }}
+th {{ font-size: {body_px - 1}px; }}
+table {{ table-layout: fixed; }}
+th {{ word-break: keep-all; overflow-wrap: anywhere; }}
+th.grp {{ font-size: {body_px - 2}px; }}
+.sheet.printing {{ width: 1047px; max-width: none; margin: 0; padding: 0; box-shadow: none; }}
 </style></head><body>
 <div class="toolbar"><button onclick="window.print()">🖨️ 인쇄 / PDF 저장</button></div>
-<div class="sheet">
+<div class="sheet" id="sheet">
 <h1>{esc(title)}</h1>
 <p class="date">(재고조사일 : {base_date})</p>
-<table><thead><tr><th style="width:14%">구 분</th><th style="width:5%">규격</th>{''.join(f'<th>{h}</th>' for h in heads)}</tr></thead>
+<table><thead><tr><th style="width:13%">구 분</th><th style="width:4%">규격</th>{grp_ths}{other_ths}</tr></thead>
 <tbody>{''.join(body)}</tbody></table>
 <div class="foot">▣ 차액분 : {esc(diff_note)}</div>
 <div class="foot">▣ 작성자 : {writer_text}</div>
-</div></body></html>"""
+</div>
+<script>
+// A4 가로(297×210mm)에서 여백(좌우 10mm, 위아래 12mm)을 뺀 인쇄 영역 = 약 1047×703px.
+// 인쇄 직전에 그 너비로 배치해 높이·너비를 재고, 넘치면 한 장에 들어가게 축소한다 (최소 55%).
+(function () {{
+  var el = document.getElementById("sheet");
+  function fit() {{
+    el.classList.add("printing");
+    el.style.zoom = 1; el.style.width = "";
+    // 축소하면 칸 너비도 같이 줄어 줄바꿈이 늘어나므로, 너비를 1047/배율로 넓혀 두고
+    // 실제로 그려진 높이가 한 장 안에 들어올 때까지 배율을 조금씩 낮춘다.
+    var s = Math.min(1, 1047 / el.scrollWidth, 700 / el.scrollHeight);
+    for (var i = 0; i < 12; i++) {{
+      s = Math.max(s, 0.55);
+      el.style.width = (1047 / s) + "px";
+      el.style.zoom = s;
+      var h = el.getBoundingClientRect().height;
+      if (h <= 700 || s <= 0.55) break;
+      s = s * Math.min(0.98, 700 / h);
+    }}
+  }}
+  function reset() {{ el.classList.remove("printing"); el.style.zoom = 1; el.style.width = ""; }}
+  window.addEventListener("beforeprint", fit);
+  window.addEventListener("afterprint", reset);
+  if (window.matchMedia) {{
+    window.matchMedia("print").addListener(function (m) {{ if (m.matches) fit(); else reset(); }});
+  }}
+}})();
+</script>
+</body></html>"""
 
 
 def cost_allocation_excel(groups, rows, month, farm_label, actual, diff_note, writers):
@@ -2329,7 +2375,7 @@ def cost_allocation_excel(groups, rows, month, farm_label, actual, diff_note, wr
         f_plain = wb.add_format({"valign": "vcenter"})
         ws.merge_range(last, 0, last, ncol - 1, f"▣ 차액분 : {diff_note}", f_plain)
         ws.merge_range(last + 1, 0, last + 1, ncol - 1, f"▣ 작성자 : {writer_text}", f_plain)
-        ws.set_landscape(); ws.set_paper(9); ws.fit_to_pages(1, 0)
+        ws.set_landscape(); ws.set_paper(9); ws.fit_to_pages(1, 1)  # 시험군·품목이 늘어도 A4 가로 한 장에 인쇄
     return buf.getvalue()
 
 
