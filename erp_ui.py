@@ -3657,6 +3657,159 @@ with tab_cattle:
                     notify(f"개체 {len(moving_cids)}마리 → {bulk_move_b} {bulk_move_p}번 우방으로 이동 완료", icon="✅")
                     st.rerun()
 
+        # ----- 개체 정보 수정: 대장에서 1마리만 체크하면 열린다 (이표번호를 잘못 넣었을 때 등) -----
+        if len(selected_move_rows) == 1:
+            edit_cid = str(selected_move_rows.iloc[0]["이표번호"]).strip()
+            edit_cur = None
+            _ec = conn.execute("SELECT * FROM cattle WHERE cattle_id = ?", (edit_cid,))
+            _row = _ec.fetchone()
+            if _row is not None:
+                edit_cur = dict(zip([d[0] for d in _ec.description], _row))
+            if edit_cur is not None:
+                st.markdown("---")
+                st.markdown(f"##### ✏️ 개체 정보 수정 — {edit_cid}")
+                st.caption("바꿀 칸만 고치세요. 아래 '바뀌는 내용'을 확인한 뒤 저장합니다. "
+                           "이표번호를 바꾸면 질병·투약 기록과 정산 기록의 이표번호도 함께 바뀝니다. "
+                           "구입금액·수수료·운송료를 고치면 구입비용합계가 다시 계산되지만, 이미 끝난 월말 정산 금액은 바뀌지 않습니다.")
+                ek = f"edit_{edit_cid}_"
+
+                def _opts(options, cur):
+                    options = list(options)
+                    return options if (cur is None or cur in options) else options + [cur]
+
+                def _to_date(v):
+                    if v is None or str(v).strip() in ("", "None", "nan"):
+                        return None
+                    try:
+                        return datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
+                    except ValueError:
+                        return None
+
+                def _num(v):
+                    return None if v is None or pd.isna(v) else float(v)
+
+                edit_groups = pd.read_sql("SELECT test_group_code, test_name FROM testgroup_master", conn)
+                edit_group_opts = {"(미배정)": None, **{r["test_name"]: r["test_group_code"] for _, r in edit_groups.iterrows()}}
+                cur_group_label = next((k for k, v in edit_group_opts.items() if v == edit_cur["test_group_code"]), "(미배정)")
+
+                ea, eb, ec_ = st.columns(3)
+                with ea:
+                    e_id = st.text_input("이표번호 (개체번호)", value=edit_cid, key=ek + "id")
+                    e_birth = st.date_input("생년월일", value=_to_date(edit_cur["birth_date"]), key=ek + "birth")
+                    e_building = st.selectbox("동", _opts([f"{i}동" for i in range(1, farm_b_cnt + 1)], edit_cur["building"]),
+                                              index=_opts([f"{i}동" for i in range(1, farm_b_cnt + 1)], edit_cur["building"]).index(edit_cur["building"])
+                                              if edit_cur["building"] else None, key=ek + "bld")
+                    e_feed = st.selectbox("사료구분", _opts(["표준", "증량형", "제한형"], edit_cur["feed_type"]),
+                                          index=_opts(["표준", "증량형", "제한형"], edit_cur["feed_type"]).index(edit_cur["feed_type"])
+                                          if edit_cur["feed_type"] else 0, key=ek + "feed")
+                    e_calf = st.number_input("송아지 구입금액 (원)", min_value=0, step=10000, value=int(_num(edit_cur["calf_price"]) or 0), key=ek + "calf")
+                    e_ins_v = st.number_input("보험 가입금액 (만원)", min_value=0, step=10, value=int(_num(edit_cur["insurance_value"]) or 0), key=ek + "insv")
+                with eb:
+                    e_kpn = st.text_input("KPN", value=edit_cur["kpn"] or "", key=ek + "kpn")
+                    e_adm = st.date_input("입식일 (구입일)", value=_to_date(edit_cur["admission_date"]), key=ek + "adm")
+                    e_pen = st.number_input("우방(칸)", min_value=1, max_value=max(farm_p_cnt, 20), step=1,
+                                            value=int(edit_cur["pen_number"]) if edit_cur["pen_number"] is not None and not pd.isna(edit_cur["pen_number"]) else None,
+                                            key=ek + "pen")
+                    e_rough = st.selectbox("조사료등급", _opts(["표준", "고급", "저급"], edit_cur["roughage_grade"]),
+                                           index=_opts(["표준", "고급", "저급"], edit_cur["roughage_grade"]).index(edit_cur["roughage_grade"])
+                                           if edit_cur["roughage_grade"] else 0, key=ek + "rough")
+                    e_comm = st.number_input("수수료 (원)", min_value=0, step=10000, value=int(_num(edit_cur["commission_fee"]) or 0), key=ek + "comm")
+                    e_ins_p = st.number_input("보험료 (원)", min_value=0, step=1000, value=int(_num(edit_cur["insurance_premium"]) or 0), key=ek + "insp")
+                with ec_:
+                    e_group = st.selectbox("시험군", list(edit_group_opts.keys()), index=list(edit_group_opts.keys()).index(cur_group_label), key=ek + "grp")
+                    e_market = st.text_input("우시장", value=edit_cur["market_name"] or "", key=ek + "mkt")
+                    e_castr = st.date_input("거세일", value=_to_date(edit_cur["castration_date"]), key=ek + "castr")
+                    e_trans = st.number_input("운송료 (원)", min_value=0, step=10000, value=int(_num(edit_cur["transport_fee"]) or 0), key=ek + "trans")
+                    e_memo = st.text_input("비고", value=edit_cur["memo"] or "", key=ek + "memo")
+
+                def _iso(d):
+                    return d.isoformat() if d else None
+
+                new_vals = {
+                    "cattle_id": e_id.strip(), "kpn": e_kpn.strip() or None, "birth_date": _iso(e_birth),
+                    "admission_date": _iso(e_adm), "test_group_code": edit_group_opts[e_group],
+                    "market_name": e_market.strip() or None, "building": e_building,
+                    "pen_number": None if e_pen is None else int(e_pen),
+                    "feed_type": e_feed, "roughage_grade": e_rough, "castration_date": _iso(e_castr),
+                    "calf_price": e_calf, "commission_fee": e_comm, "transport_fee": e_trans,
+                    "insurance_value": e_ins_v, "insurance_premium": e_ins_p, "memo": e_memo.strip() or None,
+                }
+                new_vals["initial_cost"] = e_calf + e_comm + e_trans
+                labels = {
+                    "cattle_id": "이표번호", "kpn": "KPN", "birth_date": "생년월일", "admission_date": "입식일",
+                    "test_group_code": "시험군", "market_name": "우시장", "building": "동", "pen_number": "우방",
+                    "feed_type": "사료구분", "roughage_grade": "조사료등급", "castration_date": "거세일",
+                    "calf_price": "송아지 구입금액", "commission_fee": "수수료", "transport_fee": "운송료",
+                    "initial_cost": "구입비용합계", "insurance_value": "보험 가입금액", "insurance_premium": "보험료", "memo": "비고",
+                }
+
+                def _same(a, b):
+                    a = None if a is None or (not isinstance(a, str) and pd.isna(a)) else a
+                    b = None if b is None or (not isinstance(b, str) and pd.isna(b)) else b
+                    if a in (None, "") and b in (None, ""):
+                        return True
+                    try:
+                        return float(a) == float(b)
+                    except (TypeError, ValueError):
+                        return str(a) == str(b)
+
+                changes = {k: v for k, v in new_vals.items() if not _same(edit_cur.get(k), v)}
+                if changes:
+                    group_name_by_code = {v: k for k, v in edit_group_opts.items()}
+                    show = lambda k, v: (group_name_by_code.get(v, v) if k == "test_group_code" else v)
+                    farm_dataframe(
+                        pd.DataFrame([
+                            {"항목": labels[k], "현재": str(show(k, edit_cur.get(k)) if show(k, edit_cur.get(k)) is not None else "-"),
+                             "변경 후": str(show(k, v) if show(k, v) is not None else "-")}
+                            for k, v in changes.items()
+                        ]),
+                        width="stretch", hide_index=True,
+                    )
+                else:
+                    st.caption("바뀐 내용이 없습니다.")
+
+                if st.button("수정 내용 저장", type="primary", width="stretch", key=ek + "save", disabled=not changes):
+                    if not new_vals["cattle_id"]:
+                        st.warning("이표번호를 비울 수 없습니다.")
+                    else:
+                        wc = db_connect(DB_FILE)
+                        try:
+                            new_id = new_vals["cattle_id"]
+                            if new_id != edit_cid:
+                                if wc.execute("SELECT 1 FROM cattle WHERE cattle_id = ?", (new_id,)).fetchone():
+                                    raise ValueError(f"'{new_id}' 는 이미 등록된 이표번호입니다.")
+                                # 이표번호는 다른 표가 참조하므로, 새 번호로 복사 → 참조 이동 → 옛 번호 삭제 순으로 한 트랜잭션에 처리한다.
+                                src = wc.execute("SELECT * FROM cattle WHERE cattle_id = ?", (edit_cid,))
+                                src_cols = [d[0] for d in src.description]
+                                src_row = list(src.fetchone())
+                                src_row[src_cols.index("cattle_id")] = new_id
+                                wc.execute(
+                                    "INSERT INTO cattle (%s) VALUES (%s)" % (", ".join(src_cols), ",".join(["?"] * len(src_cols))),
+                                    src_row,
+                                )
+                                for child in ("disease_record", "cattle_cost_log", "cattle_item_usage_log"):
+                                    wc.execute(f"UPDATE {child} SET cattle_id = ? WHERE cattle_id = ?", (new_id, edit_cid))
+                                wc.execute("DELETE FROM cattle WHERE cattle_id = ?", (edit_cid,))
+                            sets = [k for k in changes if k != "cattle_id"]
+                            if sets:
+                                wc.execute(
+                                    "UPDATE cattle SET %s WHERE cattle_id = ?" % ", ".join(f"{k} = ?" for k in sets),
+                                    [new_vals[k] for k in sets] + [new_id],
+                                )
+                            wc.commit()
+                        except Exception as e:
+                            wc.rollback()
+                            st.error(f"수정하지 못했습니다 (아무것도 바뀌지 않음): {e}")
+                        else:
+                            notify(f"개체 '{edit_cid}' 정보 수정 완료" + (f" → 이표번호 '{new_vals['cattle_id']}'" if new_vals["cattle_id"] != edit_cid else ""), icon="✅")
+                            st.session_state.pop("all_cattle_move_editor", None)
+                            st.rerun()
+                        finally:
+                            try:
+                                wc.close()
+                            except Exception:
+                                pass
+
 with tab1:
     col_a, col_b = st.columns(2)
     with col_a:
