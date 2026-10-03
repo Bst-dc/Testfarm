@@ -1086,6 +1086,26 @@ def settlement_cattle(conn, settlement_month):
     return cattle_df[cattle_df['rearing_days'] > 0]
 
 
+def insurance_allocation(conn, settlement_month):
+    """가축보험료를 개체별로 부과하기 위한 값. 회사 전산과 같이 그 달 입식우의 개체별 보험료를
+    그 달 원가로 넣는다 (말일 입식은 다음 달 — 고정비 등록의 가축보험료 자동 입력과 같은 기준).
+    반환: (개체별 보험료 DataFrame[cattle_id, test_group_code, premium], 등록된 가축보험료 합계)
+    가축보험료가 등록되지 않은 달은 개체별로도 부과하지 않는다 (등록 총액과 배분 합계를 맞추기 위해)."""
+    start, end, prev_end = _month_bounds(settlement_month)
+    registered = float(conn.execute(
+        "SELECT COALESCE(SUM(total_billed_amount), 0) FROM monthly_fixedcost WHERE settlement_month = ? AND expense_item = '가축보험료'",
+        (settlement_month,),
+    ).fetchone()[0] or 0)
+    per = pd.read_sql(
+        "SELECT cattle_id, test_group_code, insurance_premium AS premium FROM cattle "
+        "WHERE ((admission_date >= ? AND admission_date < ?) OR admission_date = ?) AND insurance_premium > 0",
+        conn, params=(start, end, prev_end))
+    per["premium"] = pd.to_numeric(per["premium"], errors="coerce").fillna(0).astype(float)
+    if registered <= 0:
+        per = per.iloc[0:0]
+    return per, registered
+
+
 def distribute_monthly_costs(db_file, settlement_month, replace=False):
     conn = db_connect(db_file)
     if replace:
@@ -1110,13 +1130,20 @@ def distribute_monthly_costs(db_file, settlement_month, replace=False):
 
     item_usage_df = pd.read_sql("SELECT test_group_code, item_code, SUM(total_usage) as total_qty, SUM(calculated_amount) as total_amt FROM monthly_usage WHERE settlement_month = ? GROUP BY test_group_code, item_code", conn, params=(settlement_month,))
 
+    # 가축보험료는 사육일수 비례가 아니라 그 달 입식우에게 개체별 보험료 그대로 부과한다.
+    # 나머지 고정비(+ 등록한 가축보험료와 개체별 보험료 합계의 차이)는 지금처럼 농장 전체 사육일수 비례.
+    ins_df, _ = insurance_allocation(conn, settlement_month)
+    premium_of = dict(zip(ins_df['cattle_id'], ins_df['premium']))
+    days_fixed_cost = total_fixed_cost - float(ins_df['premium'].sum())
+
     log_data = []
     item_log_data = []
     for _, row in cattle_df.iterrows():
         t_group = row['test_group_code']
         days = row['rearing_days']
-        
-        f_cost = (total_fixed_cost * days / total_farm_days) if total_farm_days > 0 else 0
+
+        f_cost = (days_fixed_cost * days / total_farm_days) if total_farm_days > 0 else 0
+        f_cost += premium_of.pop(row['cattle_id'], 0.0)
         g_days = group_days.get(t_group, 0)
         v_total = float(group_vcost.get(t_group, 0))
         v_cost = (v_total * days / g_days) if g_days > 0 else 0
@@ -1144,7 +1171,12 @@ def distribute_monthly_costs(db_file, settlement_month, replace=False):
                 'allocated_usage': round(alloc_qty, 2),
                 'allocated_amount': round(alloc_amt, 2)
             })
-        
+
+    # 보험료 부과 대상인데 이 달 사육일수가 0인 개체(예: 입식 당일 폐사)도 보험료는 그 개체 원가로 넣는다.
+    for cid, premium in premium_of.items():
+        log_data.append({'cattle_id': cid, 'settlement_month': settlement_month,
+                         'allocated_variable_cost': 0.0, 'allocated_fixed_cost': round(premium, 2)})
+
     log_df = pd.DataFrame(log_data)
     item_log_df = pd.DataFrame(item_log_data)
     
@@ -5244,8 +5276,14 @@ with tab_settle:
                    on='test_group_code', how='left')
         )
         summary['시험군'] = summary['시험군'].fillna(summary['test_group_code'])
-        # 고정비는 농장 전체 사육일수 비례로 나뉘므로, 시험군 몫도 같은 비율로 미리 계산
-        summary['고정비'] = (fixed_total * summary['사육일수'] / total_days) if total_days else 0.0
+        # 고정비는 농장 전체 사육일수 비례로 나뉘므로, 시험군 몫도 같은 비율로 미리 계산.
+        # 단 가축보험료는 그 달 입식우의 개체별 보험료로 부과되므로 시험군별 보험료 합계를 따로 더한다.
+        prev_ins_df, prev_ins_registered = insurance_allocation(conn, target_month)
+        prev_ins_sum = float(prev_ins_df['premium'].sum())
+        days_fixed = float(fixed_total) - prev_ins_sum
+        ins_by_group = prev_ins_df.groupby('test_group_code')['premium'].sum()
+        summary['고정비'] = ((days_fixed * summary['사육일수'] / total_days) if total_days else 0.0) \
+            + summary['test_group_code'].map(ins_by_group).fillna(0)
         summary = summary[['시험군', '두수', '변동비', '고정비']]
         if len(summary) > 1:  # 시험군이 하나뿐이면 전체 행이 같은 숫자의 반복이라 생략
             summary.loc[len(summary)] = ['전체', summary['두수'].sum(), summary['변동비'].sum(), float(fixed_total)]
@@ -5271,6 +5309,14 @@ with tab_settle:
         )
         if summary['두수'].iloc[-1] == 0:
             st.warning("이 달에 사육일수가 있는 개체가 없어 정산할 수 없습니다.")
+        if prev_ins_registered > 0:
+            ins_msg = (f"가축보험료 {prev_ins_registered:,.0f}원 중 {prev_ins_sum:,.0f}원은 이 달 입식우 {len(prev_ins_df):,}두"
+                       "(전월 말일 입식 포함, 이달 말일 입식 제외)에게 **개체별 보험료 그대로** 배분합니다.")
+            if abs(prev_ins_registered - prev_ins_sum) >= 1:
+                st.warning(ins_msg + f" 등록한 가축보험료와 개체별 보험료 합계가 {prev_ins_registered - prev_ins_sum:+,.0f}원 다릅니다. "
+                           "차액은 다른 고정비처럼 사육일수 비례로 나뉩니다. 개체관리대장의 보험료나 등록 금액을 확인하세요.")
+            else:
+                st.caption(ins_msg)
     else:
         st.info(f"[{target_month}] 에 등록된 사용량·고정비가 없습니다. 정산 전에 '💰 월말 등록' 탭에서 비용을 먼저 등록하세요.")
     
